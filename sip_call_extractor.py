@@ -17,11 +17,13 @@ import hashlib
 import logging
 import os
 import re
+import sys
 from datetime import datetime
 
 try:
     from scapy.all import PcapReader, PcapWriter, UDP, TCP, Raw
     from scapy.layers.inet import IP
+    from scapy.layers.rtp import RTP # Added for RTP analysis
     from scapy.error import Scapy_Exception # Import Scapy_Exception
     # User indicated scapy.layers.sip does not exist, so we will not attempt to import it.
     # SIP processing will rely on port-based detection and raw payload parsing.
@@ -39,6 +41,8 @@ LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 active_calls = {} # Key: Call-ID, Value: call details dict
 csv_writer = None # Global for CSV writer instance
 csv_file_handle = None # Global for CSV file handle
+stats_csv_writer = None # Global for statistics CSV writer instance
+stats_csv_file_handle = None # Global for statistics CSV file handle
 
 # --- Logging Setup ---
 logger = logging.getLogger(APP_NAME)
@@ -46,7 +50,7 @@ logger = logging.getLogger(APP_NAME)
 def setup_logging(debug=False):
     """Configures basic logging."""
     level = logging.DEBUG if debug else logging.INFO
-    logging.basicConfig(level=level, format=LOG_FORMAT)
+    logging.basicConfig(level=level, format=LOG_FORMAT, stream=sys.stderr, force=True)
 
 # --- Helper Functions ---
 def generate_call_filename(call_id):
@@ -170,16 +174,110 @@ def parse_sdp(sdp_payload_str, call_data_ref, is_answer=False):
             logger.info(f"SDP (Answer): Updated media sessions for {call_data_ref['call_id']}: {call_data_ref['media_sessions']}")
         else: # Offer
             # For offers, we can also add them, but an answer should override.
-            # For simplicity in this version, let's assume answers are the primary source.
-            # Or, we could collect all and let RTP matching handle it.
-            # For now, let's only populate from answers to be more precise,
-            # or if no answer is seen yet, an offer can populate it.
             if not call_data_ref['media_sessions']: # If no sessions yet (e.g. from a prior answer)
                 for session in newly_parsed_sessions:
                      call_data_ref['media_sessions'].append((session['ip'], session['port']))
                 logger.info(f"SDP (Offer): Initial media sessions for {call_data_ref['call_id']}: {call_data_ref['media_sessions']}")
+
+        # Extract ptime from SDP
+        # "a=ptime:20"
+        for line in lines:
+            if line.startswith("a=ptime:"):
+                try:
+                    ptime_val_str = line.split(":")[1].strip()
+                    ptime_val = int(ptime_val_str)
+                    call_data_ref['sdp_ptime'] = ptime_val
+                    logger.debug(f"SDP: Found ptime: {ptime_val}ms for Call-ID: {call_data_ref['call_id']}")
+                    # Typically, one ptime per SDP is dominant. If multiple, last one parsed or logic to prioritize answer's ptime.
+                    # For now, any valid ptime updates the call_data_ref.
+                    break # Assuming one relevant ptime line or first one is fine
+                except (IndexError, ValueError) as e:
+                    logger.warning(f"SDP: Could not parse ptime line: {line}. Error: {e}")
+
+
+# --- RTP Statistics Calculation and Writing ---
+def calculate_and_write_rtp_stats(call_data, call_end_time, cli_args_for_debug_info):
+    """
+    Calculates RTP statistics for all SSRCs in a call and writes them to the stats CSV.
+    :param call_data: The dictionary for the call from active_calls.
+    :param call_end_time: The timestamp when the call ended or processing stopped for it.
+    :param cli_args_for_debug_info: Parsed CLI args, mainly for debug logging context if needed.
+    """
+    global stats_csv_writer, stats_csv_file_handle
+    if not stats_csv_writer:
+        logger.warning(f"Statistics CSV writer not initialized. Skipping stats for call {call_data.get('call_id', 'N/A')}.")
+        return
+
+    call_start_time_dt = call_data.get('start_time')
+    if not call_start_time_dt:
+        logger.warning(f"Call start_time missing for call {call_data.get('call_id', 'N/A')}. Cannot calculate duration-based stats.")
+        return
     
-    
+    call_start_time_ts = call_start_time_dt.timestamp()
+    call_duration_seconds = max(0, call_end_time - call_start_time_ts)
+
+    for ssrc, stream_stats in call_data.get('rtp_streams', {}).items():
+        if stream_stats['rtp_packet_count'] == 0:
+            logger.info(f"SSRC {ssrc} in call {call_data['call_id']} had no RTP packets. Skipping stats row for this SSRC.")
+            continue # Skip this SSRC if no packets, proceed to next SSRC
+
+        # Calculate Min/Max/Avg Delta
+        if stream_stats['deltas_ms']:
+            stream_stats['max_delta_ms'] = max(stream_stats['deltas_ms'])
+            stream_stats['min_delta_ms'] = min(stream_stats['deltas_ms'])
+            stream_stats['avg_delta_ms'] = sum(stream_stats['deltas_ms']) / len(stream_stats['deltas_ms'])
+        else:
+            stream_stats['max_delta_ms'] = 0.0
+            # If 0 or 1 packet, min_delta_ms is undefined or can be set to 0.0
+            stream_stats['min_delta_ms'] = 0.0 if stream_stats['rtp_packet_count'] <= 1 else float('inf')
+            stream_stats['avg_delta_ms'] = 0.0
+
+        # Calculate Expected RTP Packets
+        ptime_ms = call_data.get('sdp_ptime', 20)
+        if ptime_ms > 0 and call_duration_seconds > 0:
+            stream_stats['expected_rtp_packets'] = (call_duration_seconds * 1000) / ptime_ms
+        else:
+            stream_stats['expected_rtp_packets'] = 0
+
+        # Calculate Lost Packets
+        num_unique_received = len(stream_stats['received_seq_nums'])
+        if num_unique_received > 0 and stream_stats['max_seq_num_seen'] != -1 and stream_stats['expected_min_seq_num'] != -1:
+            if stream_stats['max_seq_num_seen'] >= stream_stats['expected_min_seq_num']:
+                expected_range_count = (stream_stats['max_seq_num_seen'] - stream_stats['expected_min_seq_num'] + 1)
+            else: # Wrapped around
+                expected_range_count = (65536 - stream_stats['expected_min_seq_num']) + stream_stats['max_seq_num_seen'] + 1
+            stream_stats['lost_packets'] = max(0, expected_range_count - num_unique_received)
+        else:
+            stream_stats['lost_packets'] = 0
+        
+        # Out-of-order and duplicate counts are already accumulated during packet processing.
+
+        try:
+            stats_csv_writer.writerow([
+                call_data.get('call_id', 'N/A'),
+                call_start_time_dt.isoformat() if call_start_time_dt else 'N/A',
+                call_data.get('output_filename', 'N/A'),
+                call_data.get('sip_from', 'N/A'),
+                call_data.get('sip_to', 'N/A'),
+                f"0x{ssrc:08x}", # SSRC in hex
+                stream_stats.get('src_rtp_endpoint', 'N/A'), # Added
+                stream_stats.get('dst_rtp_endpoint', 'N/A'), # Added
+                stream_stats['rtp_packet_count'],
+                round(stream_stats['expected_rtp_packets']),
+                stream_stats['lost_packets'],
+                stream_stats['out_of_order_count'],
+                stream_stats['duplicate_count'],
+                f"{stream_stats['max_delta_ms']:.2f}",
+                f"{stream_stats['min_delta_ms']:.2f}" if stream_stats['min_delta_ms'] != float('inf') else "0.00",
+                f"{stream_stats['avg_delta_ms']:.2f}",
+                ptime_ms
+            ])
+            if stats_csv_file_handle: stats_csv_file_handle.flush()
+        except Exception as e_csv:
+            # Check if cli_args_for_debug_info is not None and has a 'debug' attribute
+            debug_mode = cli_args_for_debug_info.debug if cli_args_for_debug_info and hasattr(cli_args_for_debug_info, 'debug') else False
+            logger.error(f"Error writing stats to CSV for call {call_data.get('call_id')} SSRC {ssrc}: {e_csv}", exc_info=debug_mode)
+
 # --- Main Processing Logic ---
 
 def process_packet(packet, current_cli_args, current_sip_ports):
@@ -283,7 +381,10 @@ def process_packet(packet, current_cli_args, current_sip_ports):
                             'sip_dialog_participants': set(), # Set of (ip, port) tuples
                             'invite_seen': True, # Mark that INVITE has been seen
                             'sip_from': sip_from_header, # Store for CSV
-                            'sip_to': sip_to_header      # Store for CSV
+                            'sip_to': sip_to_header,      # Store for CSV
+                            'rtp_streams': {}, # For SSRC-specific RTP statistics
+                            'sdp_ptime': 20,   # Default ptime, can be updated from SDP
+                            'last_activity_time': float(packet.time) # Initialize last activity time
                         }
                         logger.info(f"New call initiated by INVITE: {call_id} (From: {sip_from_header}, To: {sip_to_header}). Output PCAP: {full_output_path}")
                         if csv_writer:
@@ -310,6 +411,7 @@ def process_packet(packet, current_cli_args, current_sip_ports):
                     # Use the correct key 'output_pcap_writer'
                     if 'output_pcap_writer' in call_data and call_data['output_pcap_writer']:
                         call_data['output_pcap_writer'].write(packet)
+                        call_data['last_activity_time'] = float(packet.time) # Update last activity time
                     else:
                         logger.error(f"Attempted to write SIP packet for call {call_id}, but 'output_pcap_writer' is missing or None in call_data.")
                 except Exception as e:
@@ -338,21 +440,27 @@ def process_packet(packet, current_cli_args, current_sip_ports):
 
                 # Call Termination (on BYE or CANCEL)
                 if sip_method in ["BYE", "CANCEL"]:
-                    logger.info(f"{sip_method} detected for call {call_id}. Closing PCAP.")
-                    try:
-                        # Ensure output_pcap_writer exists before trying to close it
-                        if 'output_pcap_writer' in call_data and call_data['output_pcap_writer']:
-                            call_data['output_pcap_writer'].close()
-                            logger.debug(f"Closed PCAP writer for call: {call_id} due to {sip_method}")
-                        else:
-                            logger.warning(f"Attempted to close call {call_id} due to {sip_method}, but 'output_pcap_writer' was missing or None.")
-                    except Exception as e:
-                        logger.error(f"Error closing PCAP writer for call {call_id} on {sip_method}: {e}")
-                    
-                    if call_id in active_calls: # Check if not already removed
-                        del active_calls[call_id] # Remove from active calls
+                    logger.info(f"{sip_method} detected for call {call_id}. Closing PCAP and calculating stats.")
+                    call_end_time = float(packet.time)
+                    if call_id in active_calls: # Ensure call_data is valid before operating on it
+                        call_data_for_stats = active_calls[call_id] # Get a reference
+                        # Calculate and write stats before closing and deleting
+                        logger.info(f"{call_id}. call calculate stats")
+                        calculate_and_write_rtp_stats(call_data_for_stats, call_end_time, current_cli_args)
+
+                        try:
+                            if 'output_pcap_writer' in call_data_for_stats and call_data_for_stats['output_pcap_writer']:
+                                call_data_for_stats['output_pcap_writer'].close()
+                                logger.debug(f"Closed PCAP writer for call: {call_id} due to {sip_method}")
+                            else:
+                                logger.warning(f"Attempted to close call {call_id} due to {sip_method}, but 'output_pcap_writer' was missing or None.")
+                        except Exception as e:
+                            logger.error(f"Error closing PCAP writer for call {call_id} on {sip_method}: {e}")
+                        
+                        del active_calls[call_id] # Remove from active calls after all operations
+                    else:
+                        logger.info(f"{call_id} not in active_calls, no status!")
                     # Note: A full SIP dialog would also consider the 200 OK to BYE.
-                    # For this tool, closing on the first sign of termination (BYE/CANCEL request) is acceptable.
         else:
             logger.debug("SIP-like packet on port, but no Call-ID found or parsed.")
         return # Processed as SIP, or attempted to.
@@ -378,7 +486,115 @@ def process_packet(packet, current_cli_args, current_sip_ports):
                             # Use the correct key 'output_pcap_writer'
                             if 'output_pcap_writer' in call_data and call_data['output_pcap_writer']:
                                 call_data['output_pcap_writer'].write(packet)
+                                call_data['last_activity_time'] = float(packet.time) # Update last activity time
                                 # logger.debug(f"RTP packet for call {call_id} ({packet_ip_src}:{packet_port_src} -> {packet_ip_dst}:{packet_port_dst}) written to {call_data['output_filename']}")
+
+                                # --- RTP Statistics Processing ---
+                                if packet.haslayer(Raw) and UDP in packet: # RTP is usually over UDP and has a payload
+                                    try:
+                                        rtp_payload_bytes = packet[UDP].payload.load
+
+                                        # Manual RTP Header Parsing for key fields
+                                        # Minimum RTP header is 12 bytes
+                                        if len(rtp_payload_bytes) < 12:
+                                            logger.debug(f"RTP payload too short for call {call_id} ({len(rtp_payload_bytes)} bytes). Skipping.")
+                                            # Continue to next iteration or return, depending on loop structure
+                                            # In this context, we'd skip this packet for this call_data iteration
+                                            # but the outer loop (for media_ip, media_port) might continue.
+                                            # For safety, let's assume we skip this packet's processing for stats.
+                                            raise ValueError("RTP payload too short")
+
+
+                                        # Check RTP version (first 2 bits of first byte should be 2)
+                                        rtp_version = (rtp_payload_bytes[0] >> 6) & 0x03
+                                        if rtp_version != 2:
+                                            logger.debug(f"Not an RTP version 2 packet for call {call_id}. Version: {rtp_version}. Skipping.")
+                                            raise ValueError("Not RTP version 2")
+
+                                        seq_num = int.from_bytes(rtp_payload_bytes[2:4], 'big')
+                                        rtp_ts = int.from_bytes(rtp_payload_bytes[4:8], 'big')
+                                        ssrc = int.from_bytes(rtp_payload_bytes[8:12], 'big')
+                                        arrival_time = float(packet.time)
+                                        
+                                        logger.debug(f"RTP Packet: Call-ID: {call_id}, SSRC: {ssrc}, Seq: {seq_num}, TS: {rtp_ts}")
+
+                                        if ssrc not in call_data['rtp_streams']:
+                                            # Determine src and dst for this SSRC based on the current RTP packet
+                                            # The SSRC identifies the source of this stream.
+                                            rtp_src_ep = f"{packet_ip_src}:{packet_port_src}"
+                                            rtp_dst_ep = f"{packet_ip_dst}:{packet_port_dst}"
+
+                                            call_data['rtp_streams'][ssrc] = {
+                                                'src_rtp_endpoint': rtp_src_ep,
+                                                'dst_rtp_endpoint': rtp_dst_ep,
+                                                'packets_info': [],
+                                                'rtp_packet_count': 0,
+                                                'expected_rtp_packets': 0, # To be calculated later
+                                                'lost_packets': 0, # To be calculated later
+                                                'out_of_order_count': 0,
+                                                'duplicate_count': 0,
+                                                'deltas_ms': [],
+                                                'max_delta_ms': 0.0,
+                                                'min_delta_ms': float('inf'),
+                                                'avg_delta_ms': 0.0,
+                                                'last_arrival_time': None,
+                                                'last_seq_num': -1, # Init with invalid seq num
+                                                'max_seq_num_seen': -1,
+                                                'expected_min_seq_num': -1, # First seq num seen for this SSRC
+                                                'received_seq_nums': set()
+                                            }
+                                        
+                                        stream_stats = call_data['rtp_streams'][ssrc]
+                                        stream_stats['packets_info'].append((arrival_time, seq_num, rtp_ts))
+                                        stream_stats['rtp_packet_count'] += 1
+
+                                        # Calculate Inter-Packet Delta
+                                        if stream_stats['last_arrival_time'] is not None:
+                                            delta = (arrival_time - stream_stats['last_arrival_time']) * 1000 # ms
+                                            stream_stats['deltas_ms'].append(delta)
+                                        stream_stats['last_arrival_time'] = arrival_time
+
+                                        # Sequence Number Tracking for Errors
+                                        if stream_stats['expected_min_seq_num'] == -1: # First packet for this SSRC
+                                            stream_stats['expected_min_seq_num'] = seq_num
+                                            stream_stats['last_seq_num'] = seq_num # Initialize last_seq_num
+                                            stream_stats['max_seq_num_seen'] = seq_num
+
+                                        if seq_num in stream_stats['received_seq_nums']:
+                                            stream_stats['duplicate_count'] += 1
+                                        else:
+                                            stream_stats['received_seq_nums'].add(seq_num)
+                                            # Out-of-order check
+                                            # Considered out-of-order if it's less than the max sequence number seen so far for this stream,
+                                            # AND it's not a duplicate, AND the difference is not large enough to be a wrap-around.
+                                            if seq_num < stream_stats['max_seq_num_seen'] and (stream_stats['max_seq_num_seen'] - seq_num < 0x7FFF): # 0x7FFF is 32767
+                                                stream_stats['out_of_order_count'] += 1
+
+                                            # Update last_seq_num for the next packet, only if it's a forward progression (or a valid wrap)
+                                            # This helps in identifying out-of-order packets correctly relative to the *last processed in-order* packet.
+                                            # However, for simple out-of-order detection against max_seq_num_seen, this specific last_seq_num update logic
+                                            # for ooo might be less critical than ensuring max_seq_num_seen is always the highest.
+                                            # Let's stick to updating last_seq_num if it's a new, higher sequence number or a wrap.
+                                            if seq_num > stream_stats['last_seq_num'] or \
+                                               (stream_stats['last_seq_num'] > seq_num and (stream_stats['last_seq_num'] - seq_num) >= 0x7FFF): # Heuristic for wrap
+                                                stream_stats['last_seq_num'] = seq_num
+                                        
+                                        # Update max_seq_num_seen correctly, handling wrap-around
+                                        if stream_stats['max_seq_num_seen'] == -1: # First packet
+                                            stream_stats['max_seq_num_seen'] = seq_num
+                                        elif seq_num > stream_stats['max_seq_num_seen']:
+                                            # If seq_num is much smaller, it might be a wrap-around from a high max_seq_num_seen
+                                            if (stream_stats['max_seq_num_seen'] > (65535 - 0x7FFF)) and (seq_num < 0x7FFF): # Heuristic: max was high, current is low
+                                                stream_stats['max_seq_num_seen'] = seq_num # It wrapped
+                                            else: # Normal increment
+                                                stream_stats['max_seq_num_seen'] = seq_num
+                                        # If seq_num is smaller but not a wrap, max_seq_num_seen doesn't change
+
+                                    except (ValueError, Scapy_Exception) as rtp_e: # Catch specific errors from manual parsing or Scapy
+                                        logger.debug(f"Scapy RTP parsing error for call {call_id} on port {packet_port_dst}: {rtp_e}")
+                                    except Exception as e_rtp:
+                                        logger.error(f"General error processing RTP for call {call_id}: {e_rtp}", exc_info=current_cli_args.debug)
+                                # --- End RTP Statistics Processing ---
                             else:
                                 logger.error(f"Attempted to write RTP packet for call {call_id}, but 'output_pcap_writer' is missing or None in call_data.")
                         except Exception as e:
@@ -407,23 +623,58 @@ def initialize_csv_writer(output_dir, detected_calls_filename_val):
         return False # Indicate failure
     return True # Indicate success
 
+def initialize_stats_csv_writer(output_dir, stats_filename_val):
+    """Initializes the CSV writer for the call statistics log."""
+    global stats_csv_writer, stats_csv_file_handle
+    output_csv_path = os.path.join(output_dir, stats_filename_val)
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        stats_csv_file_handle = open(output_csv_path, 'w', newline='')
+        stats_csv_writer = csv.writer(stats_csv_file_handle)
+        headers = [
+            'call_id', 'start_timestamp', 'output_pcap_filename', 'sip_from', 'sip_to',
+            'ssrc_hex', 'src_rtp_endpoint', 'dst_rtp_endpoint', # Updated/Added
+            'rtp_packet_count', 'expected_rtp_packets', 'lost_packets',
+            'out_of_order_count', 'duplicate_count', 'max_delta_ms', 'min_delta_ms',
+            'avg_delta_ms', 'ptime_ms'
+        ]
+        stats_csv_writer.writerow(headers)
+        logger.info(f"Initialized Statistics CSV log at: {output_csv_path}")
+    except IOError as e:
+        logger.error(f"Failed to initialize Statistics CSV writer for {output_csv_path}: {e}")
+        if stats_csv_file_handle:
+            try:
+                stats_csv_file_handle.close()
+            except IOError:
+                pass
+        return False
+    return True
+
 def close_all_active_calls():
-    """Closes all PcapWriters for calls that are still active."""
+    """Closes all PcapWriters for calls that are still active and calculates final stats."""
     global active_calls
     if not active_calls:
         return
-    logger.info(f"Closing {len(active_calls)} active call(s) at the end of PCAP processing.")
-    for call_id, call_data in list(active_calls.items()): # list() for safe iteration if modifying dict
-        # Use the correct key 'output_pcap_writer'
-        if 'output_pcap_writer' in call_data and call_data['output_pcap_writer']: # More explicit check
+    logger.info(f"Closing {len(active_calls)} active call(s) at the end of PCAP processing and calculating final stats.")
+    
+    # The calculate_and_write_rtp_stats function can handle cli_args_for_debug_info being None.
+    # The debug status for logging within that function will default to False if None is passed.
+    # Alternatively, one could pass a simple object or dict like {'debug': logger.isEnabledFor(logging.DEBUG)}
+    # if direct cli_args are not available. For now, None is handled.
+
+    for call_id, call_data in list(active_calls.items()): # list() for safe iteration
+        call_end_time = call_data.get('last_activity_time', datetime.now().timestamp()) # Fallback if not set
+        
+        calculate_and_write_rtp_stats(call_data, call_end_time, None)
+
+        if 'output_pcap_writer' in call_data and call_data['output_pcap_writer']:
             try:
                 call_data['output_pcap_writer'].close()
-                logger.debug(f"Closed PCAP writer for call: {call_id}")
+                logger.debug(f"Closed PCAP writer for call: {call_id} at final cleanup.")
             except Exception as e:
-                logger.error(f"Error closing PCAP writer for call {call_id}: {e}")
-        elif call_data.get('output_filename'): # Log if writer was expected but missing
+                logger.error(f"Error closing PCAP writer for call {call_id} at final cleanup: {e}")
+        elif call_data.get('output_filename'):
              logger.warning(f"PcapWriter for call {call_id} (file: {call_data['output_filename']}) was expected but not found or already None during final close.")
-        # Optionally, mark call as ended in CSV or internal state if needed
     active_calls.clear()
 
 def main():
@@ -437,12 +688,14 @@ def main():
                         help="Directory to save extracted PCAP files and CSV log. Default: current directory.")
     parser.add_argument("--detected-calls-filename", default="detected_calls.csv",
                         help="Filename for the CSV index of detected calls. Default: detected_calls.csv.")
+    parser.add_argument("--stats-filename", default="calls_statistics.csv",
+                        help="Filename for the CSV of call RTP statistics. Default: calls_statistics.csv.")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging.")
 
     # Assign to a local variable first, then can be passed around.
     # This also makes it clear that cli_args is specific to this main() scope initially.
     local_cli_args = parser.parse_args()
-
+    print(f"debug: {local_cli_args.debug}")
     setup_logging(local_cli_args.debug)
     logger.info(f"Starting {APP_NAME}...")
     logger.debug(f"CLI Arguments: {local_cli_args}")
@@ -461,6 +714,10 @@ def main():
 
     if not initialize_csv_writer(local_cli_args.output_dir, local_cli_args.detected_calls_filename):
         logger.error("Exiting due to CSV writer initialization failure.")
+        return 1
+
+    if not initialize_stats_csv_writer(local_cli_args.output_dir, local_cli_args.stats_filename):
+        logger.error("Exiting due to Statistics CSV writer initialization failure.")
         return 1
 
     processed_packet_count = 0
@@ -523,6 +780,13 @@ def main():
                 logger.info("Closed CSV log file.")
             except IOError as e:
                 logger.error(f"Error closing CSV log file: {e}")
+        
+        if stats_csv_file_handle: # Close statistics CSV
+            try:
+                stats_csv_file_handle.close()
+                logger.info("Closed Statistics CSV log file.")
+            except IOError as e:
+                logger.error(f"Error closing Statistics CSV log file: {e}")
         logger.info(f"{APP_NAME} finished.")
 
     return 0
