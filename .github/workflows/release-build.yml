@@ -10,8 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     container: golang:1.21-alpine
     permissions:
-      contents: read # To checkout the repository
-      # GITHUB_TOKEN has implicit write access to the release that triggered the workflow for uploading assets.
+      contents: write # Needed to upload release assets
 
     steps:
       - name: Checkout code
