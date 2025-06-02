@@ -7,6 +7,124 @@ import (
 	"github.com/google/gopacket"
 )
 
+// shouldClearPayloadForCall determines whether RTP payload should be cleared
+// for the given call based on CLI flags and regex patterns.
+func shouldClearPayloadForCall(call *Call) bool {
+	// Priority 1: "Except-For" (Preservation) Rule - if any except-for pattern matches, DO NOT clear
+	if noRtpDumpExceptForCallIdRegexp != nil && noRtpDumpExceptForCallIdRegexp.MatchString(call.CallID) {
+		return false
+	}
+	if noRtpDumpExceptForFromRegexp != nil && noRtpDumpExceptForFromRegexp.MatchString(call.SIPFrom) {
+		return false
+	}
+	if noRtpDumpExceptForToRegexp != nil && noRtpDumpExceptForToRegexp.MatchString(call.SIPTo) {
+		return false
+	}
+	
+	// Priority 2: Global Dump Rule - if --no-rtp-dump is true, CLEAR
+	if *noRtpDump {
+		return true
+	}
+	
+	// Priority 3: "For" (Targeted Dump) Rule - if any for pattern matches, CLEAR
+	if noRtpDumpForCallIdRegexp != nil && noRtpDumpForCallIdRegexp.MatchString(call.CallID) {
+		return true
+	}
+	if noRtpDumpForFromRegexp != nil && noRtpDumpForFromRegexp.MatchString(call.SIPFrom) {
+		return true
+	}
+	if noRtpDumpForToRegexp != nil && noRtpDumpForToRegexp.MatchString(call.SIPTo) {
+		return true
+	}
+	
+	// Priority 4: "Except-For" (Implicit Dump) Rule - if except-for pattern was provided but NOT matched, CLEAR
+	if *noRtpDumpExceptForCallIdPattern != "" && (noRtpDumpExceptForCallIdRegexp == nil || !noRtpDumpExceptForCallIdRegexp.MatchString(call.CallID)) {
+		return true
+	}
+	if *noRtpDumpExceptForFromPattern != "" && (noRtpDumpExceptForFromRegexp == nil || !noRtpDumpExceptForFromRegexp.MatchString(call.SIPFrom)) {
+		return true
+	}
+	if *noRtpDumpExceptForToPattern != "" && (noRtpDumpExceptForToRegexp == nil || !noRtpDumpExceptForToRegexp.MatchString(call.SIPTo)) {
+		return true
+	}
+	
+	// Priority 5: Default - DO NOT clear
+	return false
+}
+
+// clearRtpPayload clears the media payload from an RTP packet while preserving headers
+func clearRtpPayload(rtpPayload []byte, callID string) {
+	if len(rtpPayload) < 12 { // Minimum RTP header size
+		if *debug {
+			loggerDebug.Printf("CallID: %s - RTP packet too short (%d bytes) for payload clearing", callID, len(rtpPayload))
+		}
+		return
+	}
+	
+	// Parse RTP header
+	csrcCount := int(rtpPayload[0] & 0x0F)
+	hasPadding := (rtpPayload[0]>>5)&0x01 == 1
+	hasExtension := (rtpPayload[0]>>4)&0x01 == 1
+	
+	rtpHeaderBaseSize := 12 + csrcCount*4
+	payloadOffset := rtpHeaderBaseSize
+	
+	if len(rtpPayload) < payloadOffset {
+		if *debug {
+			loggerDebug.Printf("CallID: %s - RTP packet too short (%d bytes) for header size %d", callID, len(rtpPayload), rtpHeaderBaseSize)
+		}
+		return
+	}
+	
+	// Handle extension header if present
+	if hasExtension {
+		if len(rtpPayload) < payloadOffset+4 {
+			if *debug {
+				loggerDebug.Printf("CallID: %s - RTP packet too short for extension header", callID)
+			}
+			return
+		}
+		// Extension header: 2 bytes for ID, 2 bytes for length (in 32-bit words)
+		extensionLengthInWords := uint16(rtpPayload[payloadOffset+2])<<8 | uint16(rtpPayload[payloadOffset+3])
+		totalExtensionLengthBytes := (int(extensionLengthInWords) + 1) * 4 // +1 because length is N words *following* the first word
+		payloadOffset += totalExtensionLengthBytes
+	}
+	
+	if payloadOffset > len(rtpPayload) {
+		if *debug {
+			loggerDebug.Printf("CallID: %s - RTP payload offset (%d) is beyond packet length (%d) after processing headers", callID, payloadOffset, len(rtpPayload))
+		}
+		return
+	}
+	
+	// Determine actual payload start and end, considering padding
+	actualMediaPayloadEnd := len(rtpPayload)
+	if hasPadding {
+		if actualMediaPayloadEnd > 0 {
+			paddingLength := int(rtpPayload[len(rtpPayload)-1])
+			if paddingLength > 0 && paddingLength <= (actualMediaPayloadEnd-payloadOffset) {
+				actualMediaPayloadEnd -= paddingLength
+			} else if *debug {
+				loggerDebug.Printf("CallID: %s - Invalid RTP padding length: %d", callID, paddingLength)
+			}
+		}
+	}
+	
+	if payloadOffset < actualMediaPayloadEnd {
+		actualMediaPayload := rtpPayload[payloadOffset:actualMediaPayloadEnd]
+		for i := range actualMediaPayload {
+			actualMediaPayload[i] = 0
+		}
+		if *debug {
+			loggerDebug.Printf("CallID: %s - Cleared RTP payload (%d bytes) due to privacy rules", callID, len(actualMediaPayload))
+		}
+	} else if *debug && payloadOffset == actualMediaPayloadEnd {
+		loggerDebug.Printf("CallID: %s - RTP packet has no media payload to clear (offset %d, end %d)", callID, payloadOffset, actualMediaPayloadEnd)
+	} else if *debug {
+		loggerDebug.Printf("CallID: %s - RTP payload offset (%d) is beyond actual payload end (%d) after processing headers/padding", callID, payloadOffset, actualMediaPayloadEnd)
+	}
+}
+
 // handleRtpPacket processes a packet identified as UDP and potentially RTP.
 func handleRtpPacket(packet gopacket.Packet, rtpPayload []byte, ipSrc, ipDst string, srcPort, dstPort uint16) {
 	activeCallsMutex.RLock() // Start with a read lock to find the call
@@ -48,6 +166,12 @@ FoundCallForRTP:
 
 
 	// --- Process RTP for currentCallState ---
+	
+	// Check if RTP payload should be cleared for privacy
+	if shouldClearPayloadForCall(currentCallState) {
+		clearRtpPayload(rtpPayload, currentCallState.CallID)
+	}
+	
 	if currentCallState.PcapWriter != nil { // Check PcapWriter, not PcapFile, as PcapFile might be closed by SIP BYE
 		errWrite := currentCallState.PcapWriter.WritePacket(packet.Metadata().CaptureInfo, packet.Data())
 		if errWrite != nil {

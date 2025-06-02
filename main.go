@@ -75,8 +75,9 @@ func parseSIPPortsRange(portRangeStr string) (startPort, endPort uint16, err err
 }
 
 func main() {
-	initFlags()    // From cli.go
-	validateArgs() // From cli.go
+	initFlags()           // From cli.go
+	validateArgs()        // From cli.go
+	compileRegexPatterns() // From cli.go - compile RTP payload clearing regex patterns
 	setupLogging()
 
 	loggerInfo.Println("SIP Call Extractor - Go Version - Starting...")
