@@ -1,0 +1,18 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # We'll use the 'builder' stage for development commands
+      # as it has the Go toolchain and dependencies.
+      target: builder
+    working_dir: /app
+    volumes:
+      - .:/app
+    # Keep the container running so we can exec into it
+    # or use 'docker-compose run app <command>'
+    # For interactive development, 'stdin_open' and 'tty' are useful
+    # if we were to run 'sh' as the command.
+    # For now, we'll primarily use 'docker-compose run' or 'docker-compose exec'.
+    # An infinite loop command allows 'docker-compose up -d' and then 'docker-compose exec'.
+    command: tail -f /dev/null
