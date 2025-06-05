@@ -42,6 +42,9 @@ func monitorInactiveCalls() {
 					}
 					call.PcapWriter = nil
 					call.PcapFile = nil
+					
+					// Handle S3 upload and local file cleanup
+					processS3UploadAndCleanup(call.OutputFilename, *outputDir)
 				}
 				delete(activeCalls, callID)
 				loggerInfo.Printf("CallID: %s - Removed due to inactivity.", callID)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -28,7 +29,15 @@ var (
 	noRtpDumpExceptForFromPattern    *string
 	noRtpDumpForToPattern            *string
 	noRtpDumpExceptForToPattern      *string
+	
+	// S3 upload flags
+	autoUploadToS3 *bool
+	s3URI          *string
+	s3Region       *string
 )
+
+// Global variable to control CSV s3_location column
+var s3ParamsProvidedForCsv bool
 
 // Compiled regex patterns for RTP payload clearing
 var (
@@ -60,6 +69,11 @@ func initFlags() {
 	noRtpDumpForToPattern = flag.String("no-rtp-dump-for-to-pattern", "", "Regex to clear RTP payload if SIP To header matches")
 	noRtpDumpExceptForToPattern = flag.String("no-rtp-dump-except-for-to-pattern", "", "Regex to preserve RTP payload if SIP To header matches (clears otherwise if this rule is active)")
 
+	// S3 upload flags
+	autoUploadToS3 = flag.Bool("auto-upload-to-s3", false, "Automatically upload PCAP files to S3 and delete local files")
+	s3URI = flag.String("s3-uri", "", "S3 URI prefix for uploads (e.g., s3://bucket/prefix/)")
+	s3Region = flag.String("s3-region", "", "AWS region for S3 bucket")
+
 	flag.Parse()
 }
 
@@ -82,6 +96,28 @@ func validateArgs() {
 		flag.Usage()
 		os.Exit(1)
 	}
+
+	// S3 validation
+	if *autoUploadToS3 {
+		if *s3URI == "" {
+			fmt.Fprintln(os.Stderr, "Error: --s3-uri is required when --auto-upload-to-s3 is enabled.")
+			flag.Usage()
+			os.Exit(1)
+		}
+		if *s3Region == "" {
+			fmt.Fprintln(os.Stderr, "Error: --s3-region is required when --auto-upload-to-s3 is enabled.")
+			flag.Usage()
+			os.Exit(1)
+		}
+		if !strings.HasPrefix(*s3URI, "s3://") {
+			fmt.Fprintln(os.Stderr, "Error: --s3-uri must start with 's3://'.")
+			flag.Usage()
+			os.Exit(1)
+		}
+	}
+
+	// Set global variable for CSV column management
+	s3ParamsProvidedForCsv = (*s3URI != "" && *s3Region != "")
 }
 
 // compileRegexPatterns compiles the regex patterns provided via CLI flags

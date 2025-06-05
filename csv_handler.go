@@ -29,7 +29,7 @@ func initializeCSVs() error {
 		return fmt.Errorf("failed to create detected calls CSV file '%s': %w", detectedCallsPath, err)
 	}
 	detectedCallsCSV = csv.NewWriter(detectedCallsFile)
-	headersDetected := []string{"call_id", "start_timestamp", "output_pcap_filename", "sip_from", "sip_to"}
+	headersDetected := []string{"call_id", "start_timestamp", "output_pcap_filename", "sip_from", "sip_to", "s3_location"}
 	if err := detectedCallsCSV.Write(headersDetected); err != nil {
 		detectedCallsFile.Close() // Close file on error
 		return fmt.Errorf("failed to write header to detected calls CSV '%s': %w", detectedCallsPath, err)
@@ -49,7 +49,7 @@ func initializeCSVs() error {
 		"ssrc_hex", "src_rtp_endpoint", "dst_rtp_endpoint",
 		"rtp_packet_count", "expected_rtp_packets", "lost_packets",
 		"out_of_order_count", "duplicate_count", "max_delta_ms", "min_delta_ms",
-		"avg_delta_ms", "ptime_ms",
+		"avg_delta_ms", "ptime_ms", "s3_location",
 	}
 	if err := statsCSV.Write(headersStats); err != nil {
 		statsFile.Close() // Close file on error

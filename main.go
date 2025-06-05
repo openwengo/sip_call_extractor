@@ -274,8 +274,11 @@ func closeAllActiveCalls(endTime time.Time) {
 				} else {
 					loggerDebug.Printf("Closed PCAP file for call %s: %s", callID, callData.OutputFilename)
 				}
-				callData.PcapWriter = nil 
+				callData.PcapWriter = nil
 				callData.PcapFile = nil
+				
+				// Handle S3 upload and local file cleanup
+				processS3UploadAndCleanup(callData.OutputFilename, *outputDir)
 			}
 			loggerInfo.Printf("Call %s (From: %s, To: %s) considered ended.", callID, callData.SIPFrom, callData.SIPTo)
 		}

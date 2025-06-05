@@ -10,6 +10,7 @@ A high-performance SIP call extractor written in Go that processes PCAP files or
 - **Comprehensive Statistics**: Generates detailed RTP statistics including packet loss, jitter, and timing
 - **SDP Parsing**: Handles complex SDP scenarios including inactive media streams
 - **Live Capture**: Supports both PCAP file processing and live network capture
+- **S3 Upload Integration**: Automatic upload of PCAP files to AWS S3 with local cleanup
 - **Concurrent Processing**: Thread-safe design for high-performance packet processing
 - **Docker Support**: Containerized deployment with static binary builds
 
@@ -93,6 +94,8 @@ A high-performance SIP call extractor written in Go that processes PCAP files or
 
 ```
 Usage of ./sip_call_extractor:
+  -auto-upload-to-s3
+        Automatically upload PCAP files to S3 and delete local files
   -call-timeout duration
         Duration for inactive call timeout (default 5m0s)
   -debug
@@ -107,6 +110,10 @@ Usage of ./sip_call_extractor:
         Network interface name for live capture (e.g., "eth0")
   -output-dir string
         Directory to save extracted PCAP files and CSV log (default ".")
+  -s3-region string
+        AWS region for S3 bucket
+  -s3-uri string
+        S3 URI prefix for uploads (e.g., s3://bucket/prefix/)
   -sip-ports-range string
         SIP port range (e.g., "5060-5200") (Required)
   -stats-filename string
@@ -143,6 +150,26 @@ Usage of ./sip_call_extractor:
      --stats-filename my_stats.csv
    ```
 
+4. **Automatic S3 upload with local cleanup:**
+   ```bash
+   ./sip_call_extractor \
+     --input-file capture.pcap \
+     --sip-ports-range 5060-5080 \
+     --auto-upload-to-s3 \
+     --s3-uri "s3://my-backup-bucket/sip-captures/" \
+     --s3-region "us-east-1" \
+     --output-dir ./temp_calls
+   ```
+
+5. **S3 configuration without auto-upload (CSV tracking only):**
+   ```bash
+   ./sip_call_extractor \
+     --input-file capture.pcap \
+     --sip-ports-range 5060-5080 \
+     --s3-uri "s3://my-backup-bucket/sip-captures/" \
+     --s3-region "us-east-1"
+   ```
+
 ## Output Files
 
 The application generates several output files:
@@ -155,12 +182,63 @@ The application generates several output files:
 ### Detected Calls CSV
 - **Default**: `detected_calls.csv`
 - **Content**: Index of all detected calls with metadata
-- **Columns**: CallID, StartTime, EndTime, Duration, SIPFrom, SIPTo, OutputFilename
+- **Columns**: `call_id`, `start_timestamp`, `output_pcap_filename`, `sip_from`, `sip_to`, `s3_location`
 
 ### Call Statistics CSV
 - **Default**: `calls_statistics.csv`
 - **Content**: Detailed RTP statistics for each call
-- **Columns**: CallID, Duration, RTP streams with packet counts, loss rates, jitter, etc.
+- **Columns**: `call_id`, `start_timestamp`, `output_pcap_filename`, `sip_from`, `sip_to`, `ssrc_hex`, `src_rtp_endpoint`, `dst_rtp_endpoint`, `rtp_packet_count`, `expected_rtp_packets`, `lost_packets`, `out_of_order_count`, `duplicate_count`, `max_delta_ms`, `min_delta_ms`, `avg_delta_ms`, `ptime_ms`, `s3_location`
+
+## S3 Integration
+
+The application supports automatic upload of extracted PCAP files to AWS S3 with configurable cleanup of local files.
+
+### Features
+- **Automatic Upload**: PCAP files are uploaded to S3 immediately after call completion
+- **Local Cleanup**: Local PCAP files are automatically deleted after upload (regardless of upload success/failure to prevent disk space issues)
+- **CSV Tracking**: S3 location is recorded in both CSV files for reference
+- **AWS SDK Integration**: Uses AWS SDK v2 with standard credential resolution
+- **Error Resilience**: Upload failures are logged but don't prevent local file cleanup
+
+### Configuration
+
+S3 upload requires three parameters:
+- `--auto-upload-to-s3`: Enable automatic upload and local file deletion
+- `--s3-uri`: S3 URI prefix (e.g., `s3://bucket-name/prefix/`)
+- `--s3-region`: AWS region for the S3 bucket
+
+### AWS Credentials
+
+The application uses the AWS SDK's default credential resolution order:
+1. Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+2. Shared credentials file (`~/.aws/credentials`)
+3. IAM roles (when running on EC2)
+4. Container credentials (when running in ECS/EKS)
+
+### S3 Permissions
+
+The application requires the following S3 permissions:
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+                "s3:PutObjectAcl"
+            ],
+            "Resource": "arn:aws:s3:::your-bucket-name/prefix/*"
+        }
+    ]
+}
+```
+
+### CSV Behavior
+
+The `s3_location` column is always present in CSV files:
+- **With S3 enabled**: Contains the full S3 URI (e.g., `s3://bucket/prefix/filename.pcap`)
+- **Without S3**: Column is empty but still present for consistency
 
 ## Architecture
 
@@ -171,6 +249,7 @@ The application generates several output files:
 - **RTP Handler** (`rtp_handler.go`): Associates RTP packets with calls and collects statistics
 - **Call Manager** (`call_manager.go`): Manages call timeouts and cleanup
 - **Statistics Handler** (`stats_handler.go`): Calculates comprehensive RTP statistics
+- **S3 Handler** (`s3_handler.go`): Manages S3 uploads and local file cleanup
 
 ### Concurrency Model
 
@@ -241,6 +320,13 @@ The test suite covers:
    - Ensure RTP ports are within the capture scope
    - Check for NAT/firewall issues affecting RTP flow
    - Verify SDP parsing with debug output
+
+4. **S3 Upload Issues**
+   - Verify AWS credentials are properly configured
+   - Check S3 bucket permissions and region settings
+   - Ensure the S3 URI format is correct (must start with `s3://`)
+   - Review AWS SDK error messages in the application logs
+   - Note: Local files are deleted regardless of upload success to prevent disk space issues
 
 ### Debug Mode
 

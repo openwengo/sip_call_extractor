@@ -181,6 +181,14 @@ func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst 
 
 			if detectedCallsCSV != nil { // detectedCallsCSV from csv_handler.go
 				record := []string{callID, call.StartTime.Format(time.RFC3339), outputFilename, fromHeader, toHeader}
+				
+				// Always add s3_location column
+				var s3Location string
+				if s3ParamsProvidedForCsv && *autoUploadToS3 {
+					s3Location = constructS3Location(*s3URI, outputFilename)
+				}
+				record = append(record, s3Location)
+				
 				if err := detectedCallsCSV.Write(record); err != nil {
 					loggerInfo.Printf("Error writing to detected_calls.csv for %s: %v", callID, err)
 				}
@@ -220,8 +228,11 @@ func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst 
 				} else {
 					loggerDebug.Printf("Closed PCAP file for call %s: %s", callID, call.OutputFilename)
 				}
-				call.PcapWriter = nil 
+				call.PcapWriter = nil
 				call.PcapFile = nil
+				
+				// Handle S3 upload and local file cleanup
+				processS3UploadAndCleanup(call.OutputFilename, *outputDir)
 			}
 			delete(activeCalls, callID)
 		}

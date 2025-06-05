@@ -110,6 +110,13 @@ func calculateAndWriteRTPStats(call *Call, callEndTime time.Time) {
 			fmt.Sprintf("%.2f", streamStats.AvgDeltaMs),
 			strconv.Itoa(ptimeMs),
 		}
+		
+		// Always add s3_location column
+		var s3Location string
+		if s3ParamsProvidedForCsv && *autoUploadToS3 {
+			s3Location = constructS3Location(*s3URI, call.OutputFilename)
+		}
+		record = append(record, s3Location)
 		if err := statsCSV.Write(record); err != nil {
 			loggerInfo.Printf("CallID: %s, SSRC: 0x%x - Error writing stats to CSV: %v", call.CallID, ssrc, err)
 		}
