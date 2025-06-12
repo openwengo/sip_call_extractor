@@ -34,6 +34,12 @@ var (
 	autoUploadToS3 *bool
 	s3URI          *string
 	s3Region       *string
+	
+	// ERSPAN flags
+	enableERSPAN     *bool
+	erspanSpanIDs    *string
+	erspanVLANs      *string
+	logERSPANStats   *bool
 )
 
 // Global variable to control CSV s3_location column
@@ -73,6 +79,12 @@ func initFlags() {
 	autoUploadToS3 = flag.Bool("auto-upload-to-s3", false, "Automatically upload PCAP files to S3 and delete local files")
 	s3URI = flag.String("s3-uri", "", "S3 URI prefix for uploads (e.g., s3://bucket/prefix/)")
 	s3Region = flag.String("s3-region", "", "AWS region for S3 bucket")
+
+	// ERSPAN flags
+	enableERSPAN = flag.Bool("enable-erspan", false, "Enable ERSPAN/GRE packet processing")
+	erspanSpanIDs = flag.String("erspan-span-ids", "", "Comma-separated list of SPAN IDs to process (empty = all)")
+	erspanVLANs = flag.String("erspan-vlans", "", "Comma-separated list of VLANs to process (empty = all)")
+	logERSPANStats = flag.Bool("log-erspan-stats", false, "Log ERSPAN session statistics")
 
 	flag.Parse()
 }
@@ -118,6 +130,36 @@ func validateArgs() {
 
 	// Set global variable for CSV column management
 	s3ParamsProvidedForCsv = (*s3URI != "" && *s3Region != "")
+	
+	// ERSPAN validation
+	if err := validateERSPANConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		flag.Usage()
+		os.Exit(1)
+	}
+}
+
+// validateERSPANConfig validates ERSPAN-related configuration
+func validateERSPANConfig() error {
+	if *enableERSPAN && *bpfFilter != "" && *bpfFilter != "udp" {
+		return fmt.Errorf("BPF filters are not supported with ERSPAN mode. Please configure filtering using Cisco ACLs on the switch")
+	}
+	return nil
+}
+
+// generateBPFFilter generates the appropriate BPF filter based on ERSPAN mode
+func generateBPFFilter() string {
+	if *enableERSPAN {
+		// ERSPAN mode - capture all GRE traffic, ignore user filter
+		if *bpfFilter != "" && *bpfFilter != "udp" {
+			// This should have been caught in validation, but log a warning just in case
+			fmt.Fprintf(os.Stderr, "Warning: BPF filter '%s' ignored in ERSPAN mode. Use Cisco ACLs to filter ERSPAN traffic at source.\n", *bpfFilter)
+		}
+		return "proto gre"
+	}
+	
+	// Normal mode - use user filter as-is
+	return *bpfFilter
 }
 
 // compileRegexPatterns compiles the regex patterns provided via CLI flags

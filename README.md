@@ -11,6 +11,7 @@ A high-performance SIP call extractor written in Go that processes PCAP files or
 - **SDP Parsing**: Handles complex SDP scenarios including inactive media streams
 - **Live Capture**: Supports both PCAP file processing and live network capture
 - **S3 Upload Integration**: Automatic upload of PCAP files to AWS S3 with local cleanup
+- **ERSPAN Support**: Cisco ERSPAN Type I, Type II and Type III encapsulated traffic processing
 - **Concurrent Processing**: Thread-safe design for high-performance packet processing
 - **Docker Support**: Containerized deployment with static binary builds
 
@@ -118,6 +119,14 @@ Usage of ./sip_call_extractor:
         SIP port range (e.g., "5060-5200") (Required)
   -stats-filename string
         Filename for the CSV of call RTP statistics (default "calls_statistics.csv")
+  -enable-erspan
+        Enable ERSPAN/GRE packet processing
+  -erspan-span-ids string
+        Comma-separated list of SPAN IDs to process (empty = all)
+  -erspan-vlans string
+        Comma-separated list of VLANs to process (empty = all)
+  -log-erspan-stats
+        Log ERSPAN session statistics
 ```
 
 ### Examples
@@ -169,6 +178,25 @@ Usage of ./sip_call_extractor:
      --s3-uri "s3://my-backup-bucket/sip-captures/" \
      --s3-region "us-east-1"
    ```
+
+6. **ERSPAN encapsulated traffic processing:**
+  ```bash
+  ./sip_call_extractor \
+    --input-file erspan_capture.pcap \
+    --enable-erspan \
+    --erspan-span-ids "1,2,5" \
+    --sip-ports-range 5060-5080 \
+    --log-erspan-stats
+  ```
+
+7. **Live ERSPAN capture:**
+  ```bash
+  sudo ./sip_call_extractor \
+    --interface eth0 \
+    --enable-erspan \
+    --sip-ports-range 5060-5200 \
+    --output-dir ./erspan_calls
+  ```
 
 ## Output Files
 
@@ -247,6 +275,7 @@ The `s3_location` column is always present in CSV files:
 - **SIP Handler** (`sip_handler.go`): Parses SIP messages and manages call state
 - **SDP Handler** (`sdp_handler.go`): Processes SDP payloads and extracts media session information
 - **RTP Handler** (`rtp_handler.go`): Associates RTP packets with calls and collects statistics
+- **ERSPAN Handler** (`erspan_handler.go`): Processes Cisco ERSPAN Type II and Type III encapsulated traffic
 - **Call Manager** (`call_manager.go`): Manages call timeouts and cleanup
 - **Statistics Handler** (`stats_handler.go`): Calculates comprehensive RTP statistics
 - **S3 Handler** (`s3_handler.go`): Manages S3 uploads and local file cleanup
@@ -328,6 +357,13 @@ The test suite covers:
    - Review AWS SDK error messages in the application logs
    - Note: Local files are deleted regardless of upload success to prevent disk space issues
 
+5. **ERSPAN Processing Issues**
+   - Ensure ERSPAN traffic is properly configured on Cisco switches
+   - Verify GRE protocol (0x88BE) is present in captured traffic
+   - Check ERSPAN version compatibility (supports Type II and Type III)
+   - Use `--log-erspan-stats` for detailed ERSPAN session information
+   - Note: BPF filters are not supported in ERSPAN mode - use Cisco ACLs for filtering
+
 ### Debug Mode
 
 Enable debug logging for detailed processing information:
@@ -341,6 +377,7 @@ Debug output includes:
 - SDP media session extraction
 - RTP packet association
 - Call state transitions
+- ERSPAN session tracking and statistics
 
 ## Migration from Python Version
 
@@ -349,6 +386,7 @@ This Go implementation provides:
 - **Better Resource Management**: Automatic call cleanup and memory management
 - **Enhanced SDP Support**: Improved handling of complex SDP scenarios
 - **Robust Statistics**: More accurate RTP statistics with wrap-around handling
+- **ERSPAN Support**: Cisco ERSPAN Type I, Type II and Type III processing capability
 - **Container Ready**: Docker support with static binary builds
 
 ### Key Differences
@@ -356,6 +394,7 @@ This Go implementation provides:
 - Enhanced concurrency requires no special configuration
 - Improved error handling and logging
 - More comprehensive test coverage
+- ERSPAN mode disables BPF filters (use Cisco ACLs for traffic filtering)
 
 ## Contributing
 

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/google/gopacket"
 )
@@ -125,8 +126,38 @@ func clearRtpPayload(rtpPayload []byte, callID string) {
 	}
 }
 
+// trackERSPANSessionRTP tracks ERSPAN session information for RTP packets
+func trackERSPANSessionRTP(call *Call, erspanMeta *ERSPANMetadata, timestamp time.Time) {
+	if erspanMeta == nil {
+		return
+	}
+	
+	spanID := erspanMeta.SpanID
+	if session, exists := call.ERSPANSessions[spanID]; exists {
+		// Update existing session
+		session.PacketCount++
+		if *logERSPANStats && *debug {
+			loggerDebug.Printf("Updated ERSPAN session %d for call %s (RTP): PacketCount=%d",
+				spanID, call.CallID, session.PacketCount)
+		}
+	} else {
+		// Create new session
+		call.ERSPANSessions[spanID] = &ERSPANSessionInfo{
+			SpanID:      spanID,
+			VLAN:        erspanMeta.VLAN,
+			Version:     erspanMeta.Version,
+			FirstSeen:   timestamp,
+			PacketCount: 1,
+		}
+		if *logERSPANStats {
+			loggerInfo.Printf("New ERSPAN session %d for call %s (RTP): Version=%d, VLAN=%d",
+				spanID, call.CallID, erspanMeta.Version, erspanMeta.VLAN)
+		}
+	}
+}
+
 // handleRtpPacket processes a packet identified as UDP and potentially RTP.
-func handleRtpPacket(packet gopacket.Packet, rtpPayload []byte, ipSrc, ipDst string, srcPort, dstPort uint16) {
+func handleRtpPacket(packet gopacket.Packet, rtpPayload []byte, ipSrc, ipDst string, srcPort, dstPort uint16, erspanMeta *ERSPANMetadata) {
 	activeCallsMutex.RLock() // Start with a read lock to find the call
 
 	var matchedCall *Call
@@ -179,6 +210,9 @@ FoundCallForRTP:
 		}
 	}
 	currentCallState.LastActivityTime = packet.Metadata().Timestamp
+	
+	// Track ERSPAN session if metadata is available
+	trackERSPANSessionRTP(currentCallState, erspanMeta, packet.Metadata().Timestamp)
 
 	if len(rtpPayload) < 12 { // Basic RTP header is 12 bytes
 		if *debug {

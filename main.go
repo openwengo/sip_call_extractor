@@ -92,7 +92,13 @@ func main() {
 
 	loggerInfo.Printf("Input File: %s", *inputFile) // from cli.go
 	loggerInfo.Printf("Interface: %s", *ifaceName) // from cli.go
-	loggerInfo.Printf("BPF Filter: %s", *bpfFilter) // from cli.go
+	loggerInfo.Printf("BPF Filter: %s", generateBPFFilter()) // from cli.go
+	loggerInfo.Printf("ERSPAN Mode: %t", *enableERSPAN) // from cli.go
+	if *enableERSPAN {
+		loggerInfo.Printf("ERSPAN SPAN IDs: %s", *erspanSpanIDs) // from cli.go
+		loggerInfo.Printf("ERSPAN VLANs: %s", *erspanVLANs) // from cli.go
+		loggerInfo.Printf("ERSPAN Stats Logging: %t", *logERSPANStats) // from cli.go
+	}
 	loggerInfo.Printf("Effective SIP Ports Range: %d-%d", parsedStartSipPort, parsedEndSipPort)
 	loggerInfo.Printf("Output Directory: %s", *outputDir) // from cli.go
 	loggerInfo.Printf("Detected Calls Filename: %s", *detectedCallsFilename) // from cli.go
@@ -150,10 +156,12 @@ func main() {
 		}
 		defer handle.Close()
 
-		if *bpfFilter != "" {
-			loggerInfo.Printf("Applying BPF filter: %s", *bpfFilter)
-			if err := handle.SetBPFFilter(*bpfFilter); err != nil {
-				loggerInfo.Fatalf("Error applying BPF filter '%s': %v", *bpfFilter, err)
+		// Generate appropriate BPF filter based on ERSPAN mode
+		effectiveFilter := generateBPFFilter()
+		if effectiveFilter != "" {
+			loggerInfo.Printf("Applying BPF filter: %s", effectiveFilter)
+			if err := handle.SetBPFFilter(effectiveFilter); err != nil {
+				loggerInfo.Fatalf("Error applying BPF filter '%s': %v", effectiveFilter, err)
 			}
 		}
 		linkType = handle.LinkType()
@@ -182,6 +190,35 @@ func main() {
 }
 
 func processPacket(packet gopacket.Packet, startSipPort, endSipPort uint16, linkType layers.LinkType) {
+	// First check for GRE encapsulation if ERSPAN is enabled
+	greLayer := packet.Layer(layers.LayerTypeGRE)
+	var innerPacket gopacket.Packet
+	var erspanMeta *ERSPANMetadata
+	
+	if greLayer != nil && *enableERSPAN {
+		innerPacket, erspanMeta = handleGREPacket(packet, greLayer)
+		if innerPacket == nil {
+			return // Not ERSPAN or parsing failed
+		}
+		
+		// Check ERSPAN filters
+		if !shouldProcessERSPANPacket(erspanMeta) {
+			return // Filtered out by ERSPAN configuration
+		}
+		
+		if *debug {
+			loggerDebug.Printf("Processing ERSPAN packet - Version: %d, SpanID: %d, VLAN: %d",
+				erspanMeta.Version, erspanMeta.SpanID, erspanMeta.VLAN)
+		}
+	} else {
+		innerPacket = packet
+	}
+	
+	// Continue with existing IP layer processing on inner packet
+	processInnerPacket(innerPacket, startSipPort, endSipPort, linkType, erspanMeta)
+}
+
+func processInnerPacket(packet gopacket.Packet, startSipPort, endSipPort uint16, linkType layers.LinkType, erspanMeta *ERSPANMetadata) {
 	ipLayer := packet.Layer(layers.LayerTypeIPv4)
 	var ipSrc, ipDst string
 	if ipLayer != nil {
@@ -251,12 +288,12 @@ func processPacket(packet gopacket.Packet, startSipPort, endSipPort uint16, link
 			loggerDebug.Printf("Potential SIP packet detected (%s %s:%d -> %s:%d). Payload length: %d",
 				protocol, ipSrc, srcPort, ipDst, dstPort, len(transportPayload))
 		}
-		handleSipPacket(packet, transportPayload, ipSrc, ipDst, srcPort, dstPort, linkType) // From sip_handler.go
+		handleSipPacket(packet, transportPayload, ipSrc, ipDst, srcPort, dstPort, linkType, erspanMeta) // From sip_handler.go
 		return
 	}
 
 	if isUDP { // RTP is typically over UDP
-		handleRtpPacket(packet, transportPayload, ipSrc, ipDst, srcPort, dstPort) // From rtp_handler.go
+		handleRtpPacket(packet, transportPayload, ipSrc, ipDst, srcPort, dstPort, erspanMeta) // From rtp_handler.go
 	}
 }
 

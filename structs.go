@@ -21,6 +21,18 @@ type Call struct {
 	PcapWriter       *pcapgo.Writer // For writing individual call PCAPs
 	PcapFile         *os.File       // Underlying file for the PcapWriter, to allow explicit close
 	// Mutex           sync.RWMutex   // For concurrent access to call data (if needed per call)
+	
+	// ERSPAN fields
+	ERSPANSessions   map[uint16]*ERSPANSessionInfo // Key: SpanID
+}
+
+// ERSPANSessionInfo holds information about ERSPAN sessions associated with a call
+type ERSPANSessionInfo struct {
+	SpanID      uint16
+	VLAN        uint16
+	Version     uint8
+	FirstSeen   time.Time
+	PacketCount uint64
 }
 
 // MediaSession defines an IP address and port for media.

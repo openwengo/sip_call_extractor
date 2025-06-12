@@ -25,6 +25,36 @@ var (
 	reContentLength = regexp.MustCompile(`(?i)^\s*(?:Content-Length|l):\s*(\d+)`)
 )
 
+// trackERSPANSession tracks ERSPAN session information for a call
+func trackERSPANSession(call *Call, erspanMeta *ERSPANMetadata, timestamp time.Time) {
+	if erspanMeta == nil {
+		return
+	}
+	
+	spanID := erspanMeta.SpanID
+	if session, exists := call.ERSPANSessions[spanID]; exists {
+		// Update existing session
+		session.PacketCount++
+		if *logERSPANStats && *debug {
+			loggerDebug.Printf("Updated ERSPAN session %d for call %s: PacketCount=%d",
+				spanID, call.CallID, session.PacketCount)
+		}
+	} else {
+		// Create new session
+		call.ERSPANSessions[spanID] = &ERSPANSessionInfo{
+			SpanID:      spanID,
+			VLAN:        erspanMeta.VLAN,
+			Version:     erspanMeta.Version,
+			FirstSeen:   timestamp,
+			PacketCount: 1,
+		}
+		if *logERSPANStats {
+			loggerInfo.Printf("New ERSPAN session %d for call %s: Version=%d, VLAN=%d",
+				spanID, call.CallID, erspanMeta.Version, erspanMeta.VLAN)
+		}
+	}
+}
+
 // parseSipHeaders extracts key SIP headers and the SDP payload.
 func parseSipHeaders(payload []byte) (callID, sipMethod, fromHeader, toHeader string, sdpPayload []byte, err error) {
 	payloadStr := string(payload)
@@ -126,7 +156,7 @@ func generateCallFilename(callID string) string {
 }
 
 // handleSipPacket processes a packet identified as SIP.
-func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst string, srcPort, dstPort uint16, linkType layers.LinkType) {
+func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst string, srcPort, dstPort uint16, linkType layers.LinkType, erspanMeta *ERSPANMetadata) {
 	callID, sipMethod, fromHeader, toHeader, sdpData, err := parseSipHeaders(sipMsgPayload)
 	if err != nil {
 		if *debug {
@@ -138,6 +168,10 @@ func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst 
 	if *debug {
 		loggerDebug.Printf("Successfully parsed SIP: Call-ID=%s, Method=%s, From=%s, To=%s, SDP_Length=%d",
 			callID, sipMethod, fromHeader, toHeader, len(sdpData))
+		if erspanMeta != nil {
+			loggerDebug.Printf("ERSPAN metadata: Version=%d, SpanID=%d, VLAN=%d, Direction=%d, Timestamp=%d",
+				erspanMeta.Version, erspanMeta.SpanID, erspanMeta.VLAN, erspanMeta.Direction, erspanMeta.Timestamp)
+		}
 	}
 
 	activeCallsMutex.Lock()
@@ -172,9 +206,10 @@ func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst 
 				SDPPtime:         20, // Default
 				LastActivityTime: packet.Metadata().Timestamp,
 				PcapWriter:       pcapWriter,
-				PcapFile:         pcapFile, 
+				PcapFile:         pcapFile,
 				MediaSessions:    make([]MediaSession, 0),
 				RTPStreams:       make(map[uint32]*RTPStreamStats),
+				ERSPANSessions:   make(map[uint16]*ERSPANSessionInfo),
 			}
 			activeCalls[callID] = call
 			loggerInfo.Printf("New call initiated: Call-ID=%s, From=%s, To=%s. Output PCAP: %s", callID, fromHeader, toHeader, fullOutputPath)
@@ -210,6 +245,9 @@ func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst 
 			}
 		}
 		call.LastActivityTime = packet.Metadata().Timestamp
+		
+		// Track ERSPAN session if metadata is available
+		trackERSPANSession(call, erspanMeta, packet.Metadata().Timestamp)
 
 		if len(sdpData) > 0 {
 			isSdpAnswer := strings.HasPrefix(sipMethod, "STATUS_200") 
