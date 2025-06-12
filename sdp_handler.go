@@ -5,6 +5,16 @@ import (
 	"strings"
 )
 
+// isDuplicateMediaSession checks if a media session already exists in the slice
+func isDuplicateMediaSession(sessions []MediaSession, newSession MediaSession) bool {
+	for _, existing := range sessions {
+		if existing.IPAddress == newSession.IPAddress && existing.Port == newSession.Port {
+			return true
+		}
+	}
+	return false
+}
+
 // processMediaBlock parses a collected block of SDP lines (starting with m=)
 // to extract media information, considering media-level c-lines and a=inactive.
 // It updates newMediaSessions if an active media stream is found.
@@ -69,7 +79,8 @@ func processMediaBlock(blockLines []string, sessionIP string, newMediaSessions *
 		return
 	}
 
-	*newMediaSessions = append(*newMediaSessions, MediaSession{IPAddress: effectiveIP, Port: uint16(port)})
+	newSession := MediaSession{IPAddress: effectiveIP, Port: uint16(port)}
+	*newMediaSessions = append(*newMediaSessions, newSession)
 	if *debug {
 		loggerDebug.Printf("CallID: %s - SDP: Added active media session. IP: %s, Port: %d (from m-line: %s)", call.CallID, effectiveIP, port, mLine)
 	}
@@ -146,14 +157,32 @@ func parseSDP(sdpPayload []byte, call *Call, isAnswer bool) {
 	// Update call's media sessions based on whether this SDP is an offer or answer
 	if len(newMediaSessions) > 0 {
 		if isAnswer {
-			if *debug && len(call.MediaSessions) > 0 {
-				loggerDebug.Printf("CallID: %s - SDP Answer: Replacing existing media sessions (%d sessions: %+v) with new (%d sessions: %+v)",
-					call.CallID, len(call.MediaSessions), call.MediaSessions, len(newMediaSessions), newMediaSessions)
-			} else if *debug {
-				loggerDebug.Printf("CallID: %s - SDP Answer: Setting media sessions to new (%d sessions: %+v)",
-					call.CallID, len(newMediaSessions), newMediaSessions)
+			if len(call.MediaSessions) == 0 {
+				// No existing sessions, set the new ones
+				if *debug {
+					loggerDebug.Printf("CallID: %s - SDP Answer: Setting initial media sessions to new (%d sessions: %+v)",
+						call.CallID, len(newMediaSessions), newMediaSessions)
+				}
+				call.MediaSessions = newMediaSessions
+			} else {
+				// Append new unique media sessions to existing ones
+				var addedSessions []MediaSession
+				for _, newSession := range newMediaSessions {
+					if !isDuplicateMediaSession(call.MediaSessions, newSession) {
+						call.MediaSessions = append(call.MediaSessions, newSession)
+						addedSessions = append(addedSessions, newSession)
+					}
+				}
+				if *debug {
+					if len(addedSessions) > 0 {
+						loggerDebug.Printf("CallID: %s - SDP Answer: Appended %d new unique media sessions (%+v) to existing %d sessions. Total now: %d sessions (%+v)",
+							call.CallID, len(addedSessions), addedSessions, len(call.MediaSessions)-len(addedSessions), len(call.MediaSessions), call.MediaSessions)
+					} else {
+						loggerDebug.Printf("CallID: %s - SDP Answer: No new unique sessions to append. All %d sessions from answer already exist in current %d sessions (%+v)",
+							call.CallID, len(newMediaSessions), len(call.MediaSessions), call.MediaSessions)
+					}
+				}
 			}
-			call.MediaSessions = newMediaSessions // Replace for answers
 		} else { // Offer
 			if len(call.MediaSessions) == 0 { // Only set if no media sessions exist yet (e.g. from a prior answer)
 				if *debug {
@@ -162,9 +191,22 @@ func parseSDP(sdpPayload []byte, call *Call, isAnswer bool) {
 				}
 				call.MediaSessions = newMediaSessions
 			} else {
+				// Append new unique media sessions to existing ones
+				var addedSessions []MediaSession
+				for _, newSession := range newMediaSessions {
+					if !isDuplicateMediaSession(call.MediaSessions, newSession) {
+						call.MediaSessions = append(call.MediaSessions, newSession)
+						addedSessions = append(addedSessions, newSession)
+					}
+				}
 				if *debug {
-					loggerDebug.Printf("CallID: %s - SDP Offer: Media sessions already exist (%d sessions: %+v), not overwriting with offer's (%d sessions: %+v)",
-						call.CallID, len(call.MediaSessions), call.MediaSessions, len(newMediaSessions), newMediaSessions)
+					if len(addedSessions) > 0 {
+						loggerDebug.Printf("CallID: %s - SDP Offer: Appended %d new unique media sessions (%+v) to existing %d sessions. Total now: %d sessions (%+v)",
+							call.CallID, len(addedSessions), addedSessions, len(call.MediaSessions)-len(addedSessions), len(call.MediaSessions), call.MediaSessions)
+					} else {
+						loggerDebug.Printf("CallID: %s - SDP Offer: No new unique sessions to append. All %d sessions from offer already exist in current %d sessions (%+v)",
+							call.CallID, len(newMediaSessions), len(call.MediaSessions), call.MediaSessions)
+					}
 				}
 			}
 		}

@@ -115,35 +115,69 @@ a=rtpmap:100 VP8/90000
 			},
 		},
 		{
-			name: "Answer replacing existing sessions",
+			name: "Answer appending new unique sessions to existing sessions",
 			sdpPayload: `v=0
 c=IN IP4 192.168.1.10
 m=audio 5000 RTP/AVP 0
 a=ptime:20
 `,
 			isAnswer: true,
-			initialSessions: []MediaSession{{IPAddress: "10.0.0.1", Port: 1234}}, // Should be replaced
+			initialSessions: []MediaSession{{IPAddress: "10.0.0.1", Port: 1234}}, // Should be kept
 			expectedCall: &Call{
 				MediaSessions: []MediaSession{
-					{IPAddress: "192.168.1.10", Port: 5000},
+					{IPAddress: "10.0.0.1", Port: 1234},     // Original session
+					{IPAddress: "192.168.1.10", Port: 5000}, // New session from answer
 				},
 				SDPPtime: 20,
 			},
 		},
 		{
-			name: "Offer not replacing existing sessions (if any from prior answer)",
+			name: "Answer with duplicate session (should not add duplicates)",
+			sdpPayload: `v=0
+c=IN IP4 10.0.0.1
+m=audio 1234 RTP/AVP 0
+a=ptime:20
+`,
+			isAnswer: true,
+			initialSessions: []MediaSession{{IPAddress: "10.0.0.1", Port: 1234}}, // Same as in SDP
+			expectedCall: &Call{
+				MediaSessions: []MediaSession{ // Should remain the same (no duplicate)
+					{IPAddress: "10.0.0.1", Port: 1234},
+				},
+				SDPPtime: 20,
+			},
+		},
+		{
+			name: "Offer appending new unique sessions to existing sessions",
 			sdpPayload: `v=0
 c=IN IP4 192.168.1.20
 m=audio 6000 RTP/AVP 0
 a=ptime:20
 `,
 			isAnswer: false,
-			initialSessions: []MediaSession{{IPAddress: "10.0.0.2", Port: 5678}}, // Should NOT be replaced
+			initialSessions: []MediaSession{{IPAddress: "10.0.0.2", Port: 5678}}, // Should be kept
 			expectedCall: &Call{
-				MediaSessions: []MediaSession{ // Expecting the initial sessions to remain
-					{IPAddress: "10.0.0.2", Port: 5678},
+				MediaSessions: []MediaSession{ // Expecting both initial and new sessions
+					{IPAddress: "10.0.0.2", Port: 5678}, // Original session
+					{IPAddress: "192.168.1.20", Port: 6000}, // New session from offer
 				},
 				SDPPtime: 20, // ptime from current SDP should still be parsed
+			},
+		},
+		{
+			name: "Offer with duplicate session (should not add duplicates)",
+			sdpPayload: `v=0
+c=IN IP4 10.0.0.2
+m=audio 5678 RTP/AVP 0
+a=ptime:20
+`,
+			isAnswer: false,
+			initialSessions: []MediaSession{{IPAddress: "10.0.0.2", Port: 5678}}, // Same as in SDP
+			expectedCall: &Call{
+				MediaSessions: []MediaSession{ // Should remain the same (no duplicate)
+					{IPAddress: "10.0.0.2", Port: 5678},
+				},
+				SDPPtime: 20,
 			},
 		},
 		{
