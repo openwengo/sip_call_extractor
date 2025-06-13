@@ -8,6 +8,29 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
+// createMockPacket creates a mock gopacket.Packet for testing
+func createMockPacket() gopacket.Packet {
+	// Create a simple Ethernet packet as a mock
+	ethernetLayer := &layers.Ethernet{
+		SrcMAC:       []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05},
+		DstMAC:       []byte{0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b},
+		EthernetType: layers.EthernetTypeIPv4,
+	}
+	
+	// Create packet data
+	buffer := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{}
+	gopacket.SerializeLayers(buffer, opts, ethernetLayer)
+	
+	// Create packet with proper metadata
+	packet := gopacket.NewPacket(buffer.Bytes(), layers.LayerTypeEthernet, gopacket.Default)
+	packet.Metadata().Timestamp = time.Now()
+	packet.Metadata().CaptureInfo.CaptureLength = len(buffer.Bytes())
+	packet.Metadata().CaptureInfo.Length = len(buffer.Bytes())
+	
+	return packet
+}
+
 
 func TestERSPANType2Parsing(t *testing.T) {
 	// Create a mock ERSPAN Type II header (8 bytes)
@@ -28,7 +51,8 @@ func TestERSPANType2Parsing(t *testing.T) {
 
 	payload := append(erspanHeader, ethernetFrame...)
 
-	innerPacket, metadata := parseERSPANType2(payload)
+	mockPacket := createMockPacket()
+	innerPacket, metadata := parseERSPANType2(payload, mockPacket)
 
 	if innerPacket == nil {
 		t.Fatal("Expected inner packet to be parsed, got nil")
@@ -81,7 +105,8 @@ func TestERSPANType3Parsing(t *testing.T) {
 
 	payload := append(erspanHeader, ethernetFrame...)
 
-	innerPacket, metadata := parseERSPANType3(payload)
+	mockPacket := createMockPacket()
+	innerPacket, metadata := parseERSPANType3(payload, mockPacket)
 
 	if innerPacket == nil {
 		t.Fatal("Expected inner packet to be parsed, got nil")
@@ -111,6 +136,98 @@ func TestERSPANType3Parsing(t *testing.T) {
 	if metadata.Timestamp != 0x12345678 {
 		t.Errorf("Expected Timestamp 0x12345678, got %d", metadata.Timestamp)
 	}
+}
+
+func TestERSPANType1Parsing(t *testing.T) {
+	// ERSPAN Type I has no header - the payload is directly the mirrored Ethernet frame
+	// Create a minimal Ethernet frame
+	ethernetFrame := []byte{
+		0x00, 0x01, 0x02, 0x03, 0x04, 0x05, // Dst MAC
+		0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, // Src MAC
+		0x08, 0x00, // EtherType (IPv4)
+		// Add minimal IPv4 header
+		0x45, 0x00, 0x00, 0x1c, // Version, IHL, ToS, Total Length
+		0x00, 0x01, 0x40, 0x00, // ID, Flags, Fragment Offset
+		0x40, 0x11, 0x00, 0x00, // TTL, Protocol (UDP), Checksum
+		0xc0, 0xa8, 0x01, 0x01, // Source IP
+		0xc0, 0xa8, 0x01, 0x02, // Dest IP
+	}
+
+	// Create a mock GRE layer for Type I (no sequence number)
+	gre := &layers.GRE{
+		Protocol: 0x88BE, // ERSPAN protocol
+	}
+	gre.BaseLayer.Payload = ethernetFrame
+
+	// Create a mock packet
+	mockPacket := createMockPacket()
+
+	// Test ERSPAN Type I processing through handleGREPacket
+	innerPacket, metadata := handleGREPacket(mockPacket, gre)
+
+	if innerPacket == nil {
+		t.Fatal("Expected inner packet to be parsed for ERSPAN Type I, got nil")
+	}
+
+	if metadata == nil {
+		t.Fatal("Expected metadata to be parsed for ERSPAN Type I, got nil")
+	}
+
+	// Verify metadata for Type I
+	if metadata.Version != 1 {
+		t.Errorf("Expected version 1 for Type I, got %d", metadata.Version)
+	}
+
+	if metadata.SpanID != 0 {
+		t.Errorf("Expected SpanID 0 for Type I (not available), got %d", metadata.SpanID)
+	}
+
+	if metadata.VLAN != 0 {
+		t.Errorf("Expected VLAN 0 for Type I (not available), got %d", metadata.VLAN)
+	}
+
+	if metadata.Direction != 0 {
+		t.Errorf("Expected Direction 0 for Type I, got %d", metadata.Direction)
+	}
+
+	if metadata.Timestamp != 0 {
+		t.Errorf("Expected Timestamp 0 for Type I (not available), got %d", metadata.Timestamp)
+	}
+
+	// Verify that the inner packet contains the Ethernet frame
+	ethLayer := innerPacket.Layer(layers.LayerTypeEthernet)
+	if ethLayer == nil {
+		t.Fatal("Expected Ethernet layer in inner packet")
+	}
+
+	eth, ok := ethLayer.(*layers.Ethernet)
+	if !ok {
+		t.Fatal("Failed to cast to Ethernet layer")
+	}
+
+	expectedSrcMAC := []byte{0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b}
+	expectedDstMAC := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05}
+
+	if !bytesEqual(eth.SrcMAC, expectedSrcMAC) {
+		t.Errorf("Expected source MAC %v, got %v", expectedSrcMAC, eth.SrcMAC)
+	}
+
+	if !bytesEqual(eth.DstMAC, expectedDstMAC) {
+		t.Errorf("Expected destination MAC %v, got %v", expectedDstMAC, eth.DstMAC)
+	}
+}
+
+// Helper function to compare byte slices
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestGREProtocolDetection(t *testing.T) {
