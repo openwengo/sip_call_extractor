@@ -27,6 +27,8 @@ var (
 
 	loggerInfo  *log.Logger
 	loggerDebug *log.Logger
+
+	globalFragmentManager *FragmentManager
 )
 
 func setupLogging() {
@@ -103,7 +105,10 @@ func main() {
 	loggerInfo.Printf("Output Directory: %s", *outputDir) // from cli.go
 	loggerInfo.Printf("Detected Calls Filename: %s", *detectedCallsFilename) // from cli.go
 	loggerInfo.Printf("Stats Filename: %s", *statsFilename)                   // from cli.go
-	loggerInfo.Printf("Call Timeout: %s", (*callTimeout).String())             // from cli.go
+	loggerInfo.Printf("Call Timeout: %s", (*callTimeout).String()) // from cli.go
+	if *enableFragmentation {
+		loggerInfo.Printf("Fragmentation Handling Enabled: Timeout=%s, MaxFragments=%d", (*fragmentTimeout).String(), *maxFragments)
+	}
 
 	err = initializeCSVs() // From csv_handler.go
 	if err != nil {
@@ -111,6 +116,11 @@ func main() {
 	}
 	defer closeCSVs() // From csv_handler.go
 	globalCallTimeout = *callTimeout // *callTimeout from cli.go
+
+	if *enableFragmentation {
+		globalFragmentManager = NewFragmentManager(*fragmentTimeout, *maxFragments)
+		globalFragmentManager.Start()
+	}
 
 	// Start monitoring for inactive calls in a separate goroutine
 	if globalCallTimeout > 0 {
@@ -127,7 +137,11 @@ func main() {
 		loggerInfo.Printf("Received signal: %s. Shutting down gracefully...", sig)
 		// Perform cleanup before exiting
 		closeAllActiveCalls(time.Now()) // Ensure stats are written for calls active at shutdown
-		closeCSVs()                     // Ensure CSVs are flushed
+		if *enableFragmentation {
+			globalFragmentManager.Stop()
+			writeFragmentStats()
+		}
+		closeCSVs() // Ensure CSVs are flushed
 		loggerInfo.Println("Cleanup complete. Exiting.")
 		os.Exit(0)
 	}()
@@ -187,6 +201,10 @@ func main() {
 
 	loggerInfo.Printf("Finished processing. Total packets processed: %d", packetCount)
 	closeAllActiveCalls(time.Now()) // Definition will be in call_management.go or similar
+	if *enableFragmentation {
+		globalFragmentManager.Stop()
+		writeFragmentStats()
+	}
 }
 
 func processPacket(packet gopacket.Packet, startSipPort, endSipPort uint16, linkType layers.LinkType) {
@@ -219,6 +237,21 @@ func processPacket(packet gopacket.Packet, startSipPort, endSipPort uint16, link
 }
 
 func processInnerPacket(packet gopacket.Packet, startSipPort, endSipPort uint16, linkType layers.LinkType, erspanMeta *ERSPANMetadata) {
+	// Handle IPv4 fragmentation first
+	if *enableFragmentation {
+		if ipLayer := packet.Layer(layers.LayerTypeIPv4); ipLayer != nil {
+			ip, _ := ipLayer.(*layers.IPv4)
+			if isFragmented(ip) {
+				reassembledPacket := globalFragmentManager.ProcessFragment(packet, ip, erspanMeta)
+				if reassembledPacket != nil {
+					// Recursively process the reassembled packet
+					processInnerPacket(reassembledPacket, startSipPort, endSipPort, linkType, erspanMeta)
+				}
+				return // Don't process individual fragments further
+			}
+		}
+	}
+
 	ipLayer := packet.Layer(layers.LayerTypeIPv4)
 	var ipSrc, ipDst string
 	if ipLayer != nil {

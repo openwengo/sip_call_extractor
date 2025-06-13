@@ -123,3 +123,38 @@ func calculateAndWriteRTPStats(call *Call, callEndTime time.Time) {
 	}
 	statsCSV.Flush() // Flush after processing all SSRCs for a call
 }
+
+// writeFragmentStats writes fragmentation statistics to the stats CSV.
+func writeFragmentStats() {
+	if !*enableFragmentation || statsCSV == nil {
+		return
+	}
+
+	stats := globalFragmentManager.GetStats()
+
+	record := []string{
+		"fragmentation_summary",
+		time.Now().Format(time.RFC3339),
+		"", // filename
+		"", // from
+		"", // to
+		"", // ssrc
+		"", // src_rtp_endpoint
+		"", // dst_rtp_endpoint
+		fmt.Sprintf("Total Fragments: %d", stats.TotalFragments),
+		fmt.Sprintf("Reassembled Packets: %d", stats.ReassembledPackets),
+		fmt.Sprintf("Timeout Fragments: %d", stats.TimeoutFragments),
+		fmt.Sprintf("Active Fragments: %d", stats.ActiveFragments),
+		fmt.Sprintf("Dropped Fragments: %d", stats.DroppedFragments),
+		"", // max_delta
+		"", // min_delta
+		"", // avg_delta
+		"", // ptime
+		"", // s3_location
+	}
+
+	if err := statsCSV.Write(record); err != nil {
+		loggerInfo.Printf("Error writing fragment stats: %v", err)
+	}
+	statsCSV.Flush()
+}

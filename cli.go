@@ -40,6 +40,11 @@ var (
 	erspanSpanIDs    *string
 	erspanVLANs      *string
 	logERSPANStats   *bool
+
+	// Fragmentation flags
+	enableFragmentation *bool
+	fragmentTimeout     *time.Duration
+	maxFragments        *int
 )
 
 // Global variable to control CSV s3_location column
@@ -85,6 +90,11 @@ func initFlags() {
 	erspanSpanIDs = flag.String("erspan-span-ids", "", "Comma-separated list of SPAN IDs to process (empty = all)")
 	erspanVLANs = flag.String("erspan-vlans", "", "Comma-separated list of VLANs to process (empty = all)")
 	logERSPANStats = flag.Bool("log-erspan-stats", false, "Log ERSPAN session statistics")
+
+	// Fragmentation flags
+	enableFragmentation = flag.Bool("enable-fragmentation", true, "Enable IP fragmentation reassembly")
+	fragmentTimeout = flag.Duration("fragment-timeout", 30*time.Second, "Timeout for IP fragment reassembly")
+	maxFragments = flag.Int("max-fragments", 1000, "Maximum number of concurrent fragment reassembly operations")
 
 	flag.Parse()
 }
