@@ -272,6 +272,7 @@ func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst 
 				// Handle S3 upload and local file cleanup
 				processS3UploadAndCleanup(call.OutputFilename, *outputDir)
 			}
+			removeMediaSessionsFromGlobalMap(call) // Clean up media sessions from global map
 			delete(activeCalls, callID)
 		}
 	}

@@ -171,18 +171,25 @@ func handleRtpPacket(packet gopacket.Packet, rtpPayload []byte, ipSrc, ipDst str
 	var matchedCall *Call
 	var rtpDestIPMatched, rtpDestPortMatchedStr string
 
-	for _, call := range activeCalls {
-		for _, mediaSession := range call.MediaSessions {
-			if (ipDst == mediaSession.IPAddress && dstPort == mediaSession.Port) ||
-				(ipSrc == mediaSession.IPAddress && srcPort == mediaSession.Port) {
-				matchedCall = call
-				rtpDestIPMatched = mediaSession.IPAddress
-				rtpDestPortMatchedStr = strconv.Itoa(int(mediaSession.Port))
-				goto FoundCallForRTP // Break out of both loops
-			}
+	// Efficiently find the call using the global media session map
+	lookupKeyDst := fmt.Sprintf("%s:%d", ipDst, dstPort)
+	lookupKeySrc := fmt.Sprintf("%s:%d", ipSrc, srcPort)
+
+	activeMediaSessionsMutex.RLock()
+	call, found := activeMediaSessions[lookupKeyDst]
+	if found {
+		matchedCall = call
+		rtpDestIPMatched = ipDst
+		rtpDestPortMatchedStr = strconv.Itoa(int(dstPort))
+	} else {
+		call, found = activeMediaSessions[lookupKeySrc]
+		if found {
+			matchedCall = call
+			rtpDestIPMatched = ipSrc
+			rtpDestPortMatchedStr = strconv.Itoa(int(srcPort))
 		}
 	}
-FoundCallForRTP:
+	activeMediaSessionsMutex.RUnlock()
 	activeCallsMutex.RUnlock() // Release read lock after iteration
 
 	if matchedCall == nil {
@@ -222,7 +229,7 @@ FoundCallForRTP:
 	currentCallState.LastActivityTime = packet.Metadata().Timestamp
 	
 	// Track ERSPAN session if metadata is available
-	trackERSPANSessionRTP(currentCallState, erspanMeta, packet.Metadata().Timestamp)
+	//trackERSPANSessionRTP(currentCallState, erspanMeta, packet.Metadata().Timestamp)
 
 	if len(rtpPayload) < 12 { // Basic RTP header is 12 bytes
 		if *debug {

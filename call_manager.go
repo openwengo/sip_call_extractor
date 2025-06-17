@@ -1,8 +1,22 @@
 package main
 
 import (
+	"fmt"
 	"time"
 )
+
+// removeMediaSessionsFromGlobalMap removes all media sessions of a call from the global map
+func removeMediaSessionsFromGlobalMap(call *Call) {
+	activeMediaSessionsMutex.Lock()
+	defer activeMediaSessionsMutex.Unlock()
+	for _, session := range call.MediaSessions {
+		lookupKey := fmt.Sprintf("%s:%d", session.IPAddress, session.Port)
+		delete(activeMediaSessions, lookupKey)
+		if *debug {
+			loggerDebug.Printf("CallID: %s - Removed media session from global map: %s", call.CallID, lookupKey)
+		}
+	}
+}
 
 // monitorInactiveCalls periodically checks for calls that have timed out.
 func monitorInactiveCalls() {
@@ -46,6 +60,7 @@ func monitorInactiveCalls() {
 					// Handle S3 upload and local file cleanup
 					processS3UploadAndCleanup(call.OutputFilename, *outputDir)
 				}
+				removeMediaSessionsFromGlobalMap(call) // Clean up media sessions from global map
 				delete(activeCalls, callID)
 				loggerInfo.Printf("CallID: %s - Removed due to inactivity.", callID)
 			}

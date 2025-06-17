@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -13,6 +14,17 @@ func isDuplicateMediaSession(sessions []MediaSession, newSession MediaSession) b
 		}
 	}
 	return false
+}
+
+// addMediaSessionToGlobalMap adds a media session to the global activeMediaSessions map
+func addMediaSessionToGlobalMap(session MediaSession, call *Call) {
+	lookupKey := fmt.Sprintf("%s:%d", session.IPAddress, session.Port)
+	activeMediaSessionsMutex.Lock()
+	defer activeMediaSessionsMutex.Unlock()
+	activeMediaSessions[lookupKey] = call
+	if *debug {
+		loggerDebug.Printf("CallID: %s - Added media session to global map: %s", call.CallID, lookupKey)
+	}
 }
 
 // processMediaBlock parses a collected block of SDP lines (starting with m=)
@@ -164,12 +176,16 @@ func parseSDP(sdpPayload []byte, call *Call, isAnswer bool) {
 						call.CallID, len(newMediaSessions), newMediaSessions)
 				}
 				call.MediaSessions = newMediaSessions
+				for _, newSession := range newMediaSessions {
+					addMediaSessionToGlobalMap(newSession, call)
+				}
 			} else {
 				// Append new unique media sessions to existing ones
 				var addedSessions []MediaSession
 				for _, newSession := range newMediaSessions {
 					if !isDuplicateMediaSession(call.MediaSessions, newSession) {
 						call.MediaSessions = append(call.MediaSessions, newSession)
+						addMediaSessionToGlobalMap(newSession, call)
 						addedSessions = append(addedSessions, newSession)
 					}
 				}
@@ -190,12 +206,16 @@ func parseSDP(sdpPayload []byte, call *Call, isAnswer bool) {
 						call.CallID, len(newMediaSessions), newMediaSessions)
 				}
 				call.MediaSessions = newMediaSessions
+				for _, newSession := range newMediaSessions {
+					addMediaSessionToGlobalMap(newSession, call)
+				}
 			} else {
 				// Append new unique media sessions to existing ones
 				var addedSessions []MediaSession
 				for _, newSession := range newMediaSessions {
 					if !isDuplicateMediaSession(call.MediaSessions, newSession) {
 						call.MediaSessions = append(call.MediaSessions, newSession)
+						addMediaSessionToGlobalMap(newSession, call)
 						addedSessions = append(addedSessions, newSession)
 					}
 				}

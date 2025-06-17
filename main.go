@@ -23,6 +23,10 @@ var (
 	activeCalls      = make(map[string]*Call)
 	activeCallsMutex = &sync.RWMutex{}
 
+	// Global media session map for efficient RTP packet lookup
+	activeMediaSessions      = make(map[string]*Call)
+	activeMediaSessionsMutex = &sync.RWMutex{}
+
 	globalCallTimeout time.Duration
 
 	loggerInfo  *log.Logger
