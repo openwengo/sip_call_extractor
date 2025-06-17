@@ -87,22 +87,22 @@ func TestShouldClearPayloadForCall(t *testing.T) {
 			expectedClear:         true,
 		},
 		{
-			name:                            "Except-for CallID matches - should not clear (preservation rule)",
+			name:                            "Except-for CallID matches - should clear",
 			noRtpDumpFlag:                   true,
 			noRtpDumpExceptForCallIdPattern: "test-call-.*",
-			expectedClear:                   false,
+			expectedClear:                   true,
 		},
 		{
-			name:                          "Except-for From matches - should not clear (preservation rule)",
+			name:                          "Except-for From matches - should clear",
 			noRtpDumpFlag:                 true,
 			noRtpDumpExceptForFromPattern: ".*alice.*",
-			expectedClear:                 false,
+			expectedClear:                 true,
 		},
 		{
-			name:                        "Except-for To matches - should not clear (preservation rule)",
+			name:                        "Except-for To matches - should clear",
 			noRtpDumpFlag:               true,
 			noRtpDumpExceptForToPattern: ".*bob.*",
-			expectedClear:               false,
+			expectedClear:               true,
 		},
 		{
 			name:                            "Except-for CallID provided but doesn't match - should clear (implicit dump)",
@@ -121,7 +121,7 @@ func TestShouldClearPayloadForCall(t *testing.T) {
 		},
 		{
 			name:                            "Multiple patterns - except-for takes precedence",
-			noRtpDumpFlag:                   true,
+			noRtpDumpFlag:                   false,
 			noRtpDumpForCallIdPattern:       "test-call-.*",
 			noRtpDumpExceptForCallIdPattern: "test-call-.*",
 			expectedClear:                   false,

@@ -11,20 +11,24 @@ import (
 // shouldClearPayloadForCall determines whether RTP payload should be cleared
 // for the given call based on CLI flags and regex patterns.
 func shouldClearPayloadForCall(call *Call) bool {
-	// Priority 1: "Except-For" (Preservation) Rule - if any except-for pattern matches, DO NOT clear
+
+	// Priority 1: Global Dump Rule - if --no-rtp-dump is true, CLEAR
+	if *noRtpDump {
+		return true
+	}
+	
+	// Priority 2: "Except-For" (Preservation) Rule - if any except-for pattern matches, DO NOT clear
 	if noRtpDumpExceptForCallIdRegexp != nil && noRtpDumpExceptForCallIdRegexp.MatchString(call.CallID) {
+		loggerDebug.Printf("Dump rtp for call %s because %s matches %s", call.CallID,noRtpDumpExceptForCallIdRegexp.String(),call.CallID)
 		return false
 	}
 	if noRtpDumpExceptForFromRegexp != nil && noRtpDumpExceptForFromRegexp.MatchString(call.SIPFrom) {
+		loggerDebug.Printf("Dump rtp for call %s because %s matches %s", call.CallID,noRtpDumpExceptForFromRegexp.String(),call.SIPFrom)
 		return false
 	}
 	if noRtpDumpExceptForToRegexp != nil && noRtpDumpExceptForToRegexp.MatchString(call.SIPTo) {
+		loggerDebug.Printf("Dump rtp for call %s because %s matches %s", call.CallID,noRtpDumpExceptForToRegexp.String(),call.SIPTo)
 		return false
-	}
-	
-	// Priority 2: Global Dump Rule - if --no-rtp-dump is true, CLEAR
-	if *noRtpDump {
-		return true
 	}
 	
 	// Priority 3: "For" (Targeted Dump) Rule - if any for pattern matches, CLEAR
@@ -32,9 +36,11 @@ func shouldClearPayloadForCall(call *Call) bool {
 		return true
 	}
 	if noRtpDumpForFromRegexp != nil && noRtpDumpForFromRegexp.MatchString(call.SIPFrom) {
+		loggerDebug.Printf("Don't dump rtp for call %s because %s  matches %s", call.CallID,noRtpDumpExceptForFromRegexp.String(),call.SIPFrom)
 		return true
 	}
 	if noRtpDumpForToRegexp != nil && noRtpDumpForToRegexp.MatchString(call.SIPTo) {
+		loggerDebug.Printf("Don't dump rtp for call %s because %s  matches %s", call.CallID,noRtpDumpForToRegexp.String(),call.SIPTo)
 		return true
 	}
 	
@@ -43,9 +49,11 @@ func shouldClearPayloadForCall(call *Call) bool {
 		return true
 	}
 	if *noRtpDumpExceptForFromPattern != "" && (noRtpDumpExceptForFromRegexp == nil || !noRtpDumpExceptForFromRegexp.MatchString(call.SIPFrom)) {
+		loggerDebug.Printf("Don't dump rtp for call %s because %s  does not matches %s", call.CallID,noRtpDumpExceptForFromRegexp.String(),call.SIPFrom)
 		return true
 	}
 	if *noRtpDumpExceptForToPattern != "" && (noRtpDumpExceptForToRegexp == nil || !noRtpDumpExceptForToRegexp.MatchString(call.SIPTo)) {
+		loggerDebug.Printf("Don't dump rtp for call %s because %s  does not matches %s", call.CallID,noRtpDumpExceptForToRegexp.String(),call.SIPTo)		
 		return true
 	}
 	
@@ -198,12 +206,14 @@ FoundCallForRTP:
 
 	// --- Process RTP for currentCallState ---
 	
-	// Check if RTP payload should be cleared for privacy
-	if shouldClearPayloadForCall(currentCallState) {
-		clearRtpPayload(rtpPayload, currentCallState.CallID)
+	if (shouldClearPayloadForCall(currentCallState)) {
+		loggerDebug.Printf("Do not dump rtp for call %s", currentCallState.CallID)
+	} else {
+		loggerDebug.Printf("Dump rtp for call %s", currentCallState.CallID)
 	}
-	
-	if currentCallState.PcapWriter != nil { // Check PcapWriter, not PcapFile, as PcapFile might be closed by SIP BYE
+
+	// Check if RTP payload should be cleared for privacy before writing packet	
+	if ((!shouldClearPayloadForCall(currentCallState)) && (currentCallState.PcapWriter != nil)) { // Check PcapWriter, not PcapFile, as PcapFile might be closed by SIP BYE
 		errWrite := currentCallState.PcapWriter.WritePacket(packet.Metadata().CaptureInfo, packet.Data())
 		if errWrite != nil {
 			loggerInfo.Printf("Error writing RTP packet to PCAP for call %s (file %s): %v", currentCallState.CallID, currentCallState.OutputFilename, errWrite)
