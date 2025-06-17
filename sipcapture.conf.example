@@ -1,0 +1,176 @@
+# SIPCapture Configuration File Example
+# Copy this file to one of the following locations:
+# 1. Specify with --config /path/to/config.conf
+# 2. $XDG_CONFIG_HOME/sipcapture/sipcapture.conf (usually ~/.config/sipcapture/sipcapture.conf)
+# 3. /etc/sipcapture/sipcapture.conf
+#
+# Configuration values are overridden by command-line parameters.
+# Lines starting with # or ; are comments and are ignored.
+# Empty lines are ignored.
+
+[core]
+# Network interface name for live capture (alternative to input-file)
+# Example: eth0, ens33, wlan0
+# Default: (empty - must specify either interface or input-file)
+interface=
+
+# Path to the source PCAP file (alternative to interface)
+# Example: /path/to/capture.pcap
+# Default: (empty - must specify either interface or input-file)
+input-file=
+
+# BPF filter string for live capture
+# Note: BPF filters are ignored when ERSPAN mode is enabled
+# Default: udp
+filter=udp
+
+# SIP port range for packet filtering (REQUIRED)
+# Format: START-END (e.g., 5060-5200)
+# This parameter is required and has no default
+sip-ports-range=
+
+[output]
+# Directory to save extracted PCAP files and CSV logs
+# Default: . (current directory)
+output-dir=.
+
+# Filename for the CSV index of detected calls
+# Default: detected_calls.csv
+detected-calls-filename=detected_calls.csv
+
+# Filename for the CSV of call RTP statistics
+# Default: calls_statistics.csv
+stats-filename=calls_statistics.csv
+
+[processing]
+# Duration for inactive call timeout
+# Format: Go duration (e.g., "5m", "300s", "1h30m")
+# Default: 5m
+call-timeout=5m
+
+# Enable debug logging
+# Values: true, false
+# Default: false
+debug=false
+
+[rtp]
+# Clear RTP payload for all calls (privacy mode)
+# Values: true, false
+# Default: false
+no-rtp-dump=false
+
+# Regular expression to clear RTP payload if Call-ID matches
+# Example: ^test.*$ (clears RTP for Call-IDs starting with "test")
+# Default: (empty - no filtering)
+no-rtp-dump-for-callid-pattern=
+
+# Regular expression to preserve RTP payload if Call-ID matches
+# (clears RTP for all other calls if this rule is active)
+# Example: ^important.*$ (preserves RTP only for Call-IDs starting with "important")
+# Default: (empty - no filtering)
+no-rtp-dump-except-for-callid-pattern=
+
+# Regular expression to clear RTP payload if SIP From header matches
+# Example: .*@example\.com$ (clears RTP for calls from example.com domain)
+# Default: (empty - no filtering)
+no-rtp-dump-for-from-pattern=
+
+# Regular expression to preserve RTP payload if SIP From header matches
+# (clears RTP for all other calls if this rule is active)
+# Example: .*@trusted\.com$ (preserves RTP only for calls from trusted.com)
+# Default: (empty - no filtering)
+no-rtp-dump-except-for-from-pattern=
+
+# Regular expression to clear RTP payload if SIP To header matches
+# Example: .*@external\.com$ (clears RTP for calls to external.com domain)
+# Default: (empty - no filtering)
+no-rtp-dump-for-to-pattern=
+
+# Regular expression to preserve RTP payload if SIP To header matches
+# (clears RTP for all other calls if this rule is active)
+# Example: .*@internal\.com$ (preserves RTP only for calls to internal.com)
+# Default: (empty - no filtering)
+no-rtp-dump-except-for-to-pattern=
+
+[s3]
+# Automatically upload PCAP files to S3 and delete local files
+# Values: true, false
+# Default: false
+auto-upload-to-s3=false
+
+# S3 URI prefix for uploads
+# Format: s3://bucket/prefix/
+# Example: s3://my-sipcapture-bucket/captures/
+# Default: (empty - required if auto-upload-to-s3 is true)
+s3-uri=
+
+# AWS region for S3 bucket
+# Example: us-west-2, eu-central-1
+# Default: (empty - required if auto-upload-to-s3 is true)
+s3-region=
+
+[erspan]
+# Enable ERSPAN/GRE packet processing
+# When enabled, the application processes GRE-encapsulated packets
+# and BPF filters are automatically set to "proto gre"
+# Values: true, false
+# Default: false
+enable-erspan=false
+
+# Comma-separated list of SPAN IDs to process
+# Example: 1,2,5 (processes only SPAN IDs 1, 2, and 5)
+# Default: (empty - processes all SPAN IDs)
+erspan-span-ids=
+
+# Comma-separated list of VLANs to process
+# Example: 100,200,300 (processes only VLANs 100, 200, and 300)
+# Default: (empty - processes all VLANs)
+erspan-vlans=
+
+# Log ERSPAN session statistics
+# Values: true, false
+# Default: false
+log-erspan-stats=false
+
+[fragmentation]
+# Enable IP fragmentation reassembly
+# When enabled, fragmented IP packets are reassembled before processing
+# Values: true, false
+# Default: true
+enable-fragmentation=true
+
+# Timeout for IP fragment reassembly
+# Format: Go duration (e.g., "30s", "1m", "90s")
+# Default: 30s
+fragment-timeout=30s
+
+# Maximum number of concurrent fragment reassembly operations
+# Higher values use more memory but can handle more concurrent fragmented flows
+# Default: 1000
+max-fragments=1000
+
+# Example complete configuration for a typical deployment:
+#
+# [core]
+# interface=eth0
+# sip-ports-range=5060-5080
+#
+# [output]
+# output-dir=/var/log/sipcapture
+#
+# [processing]
+# call-timeout=10m
+# debug=false
+#
+# [rtp]
+# no-rtp-dump-for-from-pattern=.*@external\.com$
+#
+# [s3]
+# auto-upload-to-s3=true
+# s3-uri=s3://my-company-sipcapture/captures/
+# s3-region=us-east-1
+#
+# [fragmentation]
+# enable-fragmentation=true
+# fragment-timeout=60s
+# max-fragments=2000
