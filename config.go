@@ -47,6 +47,11 @@ type Config struct {
 	EnableFragmentation bool
 	FragmentTimeout     time.Duration
 	MaxFragments        int
+
+	// Live capture parameters (only applicable for interface mode)
+	SnapshotLength int  // Snapshot length in bytes (0=262144, max=262144)
+	BufferSize     int  // OS capture buffer size in KiB (default: 0 = system default)
+	CaptureStats   bool // Enable capture statistics reporting (default: false)
 }
 
 // DefaultConfig returns a Config struct with default values
@@ -87,6 +92,11 @@ func DefaultConfig() *Config {
 		EnableFragmentation: true,
 		FragmentTimeout:     30 * time.Second,
 		MaxFragments:        1000,
+
+		// Live capture defaults
+		SnapshotLength: 2000, // Keep 2000 as default, but 0 will mean 262144
+		BufferSize:     0,    // 0 means use system default
+		CaptureStats:   false,
 	}
 }
 
@@ -286,6 +296,32 @@ func setConfigValue(config *Config, key, value string) error {
 			return fmt.Errorf("invalid integer for max-fragments: %w", err)
 		}
 		config.MaxFragments = maxFrags
+
+	// Live capture parameters
+	case "snapshot-length":
+		snaplen, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid integer for snapshot-length: %w", err)
+		}
+		if snaplen < 0 || snaplen > 262144 {
+			return fmt.Errorf("snapshot-length must be between 0 and 262144 bytes (0=default 262144)")
+		}
+		config.SnapshotLength = snaplen
+	case "buffer-size":
+		bufSize, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid integer for buffer-size: %w", err)
+		}
+		if bufSize < 0 {
+			return fmt.Errorf("buffer-size cannot be negative")
+		}
+		config.BufferSize = bufSize
+	case "capture-stats":
+		captureStats, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("invalid boolean for capture-stats: %w", err)
+		}
+		config.CaptureStats = captureStats
 
 	default:
 		return fmt.Errorf("unknown configuration key: %s", key)

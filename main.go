@@ -29,7 +29,22 @@ var (
 	loggerDebug *log.Logger
 
 	globalFragmentManager *FragmentManager
+
+	// Capture statistics tracking
+	globalCaptureStats *CaptureStats
+	captureStatsTimer  *time.Timer
 )
+
+// CaptureStats tracks packet capture statistics
+type CaptureStats struct {
+	PacketsReceived  uint64
+	PacketsDropped   uint64
+	PacketsIfDropped uint64
+	PacketsTruncated uint64
+	StartTime        time.Time
+	LastReportTime   time.Time
+	mutex            sync.RWMutex
+}
 
 func setupLogging() {
 	loggerInfo = log.New(os.Stderr, "INFO: ", log.Ldate|log.Ltime|log.Lshortfile)
@@ -74,6 +89,108 @@ func parseSIPPortsRange(portRangeStr string) (startPort, endPort uint16, err err
 		return 0, 0, fmt.Errorf("port %d exceeds maximum value of 65535", end)
 	}
 	return uint16(start), uint16(end), nil
+}
+
+// resolveSnapshotLength converts 0 to default 262144, validates range
+func resolveSnapshotLength(snaplen int) int {
+	if snaplen == 0 {
+		return 262144 // Default maximum
+	}
+	return snaplen
+}
+
+// initCaptureStats initializes capture statistics tracking
+func initCaptureStats() {
+	if *captureStats && *ifaceName != "" {
+		globalCaptureStats = &CaptureStats{
+			StartTime:      time.Now(),
+			LastReportTime: time.Now(),
+		}
+		
+		// Start periodic reporting every 10 seconds
+		captureStatsTimer = time.NewTimer(10 * time.Second)
+		go captureStatsReporter()
+	}
+}
+
+// captureStatsReporter handles periodic statistics reporting
+func captureStatsReporter() {
+	for {
+		select {
+		case <-captureStatsTimer.C:
+			if globalCaptureStats != nil {
+				reportCaptureStats(false)
+				captureStatsTimer.Reset(10 * time.Second)
+			}
+		}
+	}
+}
+
+// reportCaptureStats reports current capture statistics
+func reportCaptureStats(final bool) {
+	if globalCaptureStats == nil {
+		return
+	}
+	
+	globalCaptureStats.mutex.RLock()
+	defer globalCaptureStats.mutex.RUnlock()
+	
+	now := time.Now()
+	duration := now.Sub(globalCaptureStats.StartTime)
+	
+	prefix := "CAPTURE STATS"
+	if final {
+		prefix = "FINAL CAPTURE STATS"
+	}
+	
+	fmt.Fprintf(os.Stderr, "%s: Duration=%v, Received=%d, Dropped=%d, IfDropped=%d, Truncated=%d\n",
+		prefix,
+		duration.Round(time.Second),
+		globalCaptureStats.PacketsReceived,
+		globalCaptureStats.PacketsDropped,
+		globalCaptureStats.PacketsIfDropped,
+		globalCaptureStats.PacketsTruncated,
+	)
+}
+
+// updateCaptureStats updates statistics from pcap handle and packet processing
+func updateCaptureStats(handle *pcap.Handle, packetTruncated bool) {
+	if globalCaptureStats == nil {
+		return
+	}
+	
+	// Get current stats from pcap handle
+	stats, err := handle.Stats()
+	if err != nil {
+		if *debug {
+			loggerDebug.Printf("Error getting capture stats: %v", err)
+		}
+		return
+	}
+	
+	globalCaptureStats.mutex.Lock()
+	defer globalCaptureStats.mutex.Unlock()
+	
+	globalCaptureStats.PacketsReceived = uint64(stats.PacketsReceived)
+	globalCaptureStats.PacketsDropped = uint64(stats.PacketsDropped)
+	globalCaptureStats.PacketsIfDropped = uint64(stats.PacketsIfDropped)
+	
+	if packetTruncated {
+		globalCaptureStats.PacketsTruncated++
+	}
+}
+
+// stopCaptureStats stops statistics reporting and prints final stats
+func stopCaptureStats(handle *pcap.Handle) {
+	if globalCaptureStats != nil {
+		if captureStatsTimer != nil {
+			captureStatsTimer.Stop()
+		}
+		
+		// Final update and report
+		updateCaptureStats(handle, false)
+		reportCaptureStats(true)
+	}
 }
 
 func main() {
@@ -141,6 +258,18 @@ func main() {
 			globalFragmentManager.Stop()
 			writeFragmentStats()
 		}
+		
+		// Final capture statistics for live capture
+		if *captureStats && *ifaceName != "" {
+			// Note: handle may not be available in graceful shutdown context
+			if globalCaptureStats != nil {
+				if captureStatsTimer != nil {
+					captureStatsTimer.Stop()
+				}
+				reportCaptureStats(true)
+			}
+		}
+		
 		closeCSVs() // Ensure CSVs are flushed
 		loggerInfo.Println("Cleanup complete. Exiting.")
 		os.Exit(0)
@@ -162,15 +291,61 @@ func main() {
 		packetSource = gopacket.NewPacketSource(handle, linkType)
 		loggerInfo.Printf("Successfully opened PCAP file: %s with LinkType: %s", *inputFile, linkType.String())
 	} else if *ifaceName != "" {
+		effectiveSnaplen := resolveSnapshotLength(*snapshotLength)
+		
 		loggerInfo.Printf("Starting live capture on interface: %s with filter: %s", *ifaceName, *bpfFilter)
+		loggerInfo.Printf("Capture parameters: snaplen=%d bytes%s, buffer=%s, stats=%t",
+			effectiveSnaplen,
+			func() string { if *snapshotLength == 0 { return " (default)" } else { return "" } }(),
+			func() string { if *bufferSize == 0 { return "system default" } else { return fmt.Sprintf("%d KiB", *bufferSize) } }(),
+			*captureStats)
+		
+		// Create inactive handle for advanced configuration
+		inactiveHandle, err := pcap.NewInactiveHandle(*ifaceName)
+		if err != nil {
+			loggerInfo.Fatalf("Could not create inactive handle for interface '%s': %v\nPossible causes:\n- Interface does not exist\n- Insufficient privileges (try running as root)\n- Interface is not available for capture", *ifaceName, err)
+		}
+		defer func() {
+			inactiveHandle.CleanUp()
+		}()
+		
+		// Set snapshot length
+		if err := inactiveHandle.SetSnapLen(effectiveSnaplen); err != nil {
+			loggerInfo.Fatalf("Could not set snapshot length to %d: %v", effectiveSnaplen, err)
+		}
+		loggerInfo.Printf("Set snapshot length to %d bytes", effectiveSnaplen)
+		
+		// Set promiscuous mode
+		if err := inactiveHandle.SetPromisc(true); err != nil {
+			loggerInfo.Fatalf("Could not set promiscuous mode: %v", err)
+		}
+		
+		// Set timeout
+		if err := inactiveHandle.SetTimeout(pcap.BlockForever); err != nil {
+			loggerInfo.Fatalf("Could not set timeout: %v", err)
+		}
+		
+		// Set buffer size if specified
+		if *bufferSize > 0 {
+			bufferSizeBytes := *bufferSize * 1024 // Convert KiB to bytes
+			if err := inactiveHandle.SetBufferSize(bufferSizeBytes); err != nil {
+				loggerInfo.Fatalf("Could not set buffer size to %d KiB (%d bytes): %v",
+					*bufferSize, bufferSizeBytes, err)
+			}
+			loggerInfo.Printf("Set capture buffer size to %d KiB (%d bytes)", *bufferSize, bufferSizeBytes)
+		} else {
+			loggerInfo.Printf("Using system default capture buffer size")
+		}
+		
+		// Activate the handle
 		var errOpenLive error
-		handle, errOpenLive = pcap.OpenLive(*ifaceName, 1600, true, pcap.BlockForever)
+		handle, errOpenLive = inactiveHandle.Activate()
 		if errOpenLive != nil {
-			loggerInfo.Fatalf("Error opening live capture on interface '%s': %v", *ifaceName, errOpenLive)
+			loggerInfo.Fatalf("Error activating live capture on interface '%s': %v\nPossible causes:\n- Insufficient privileges (try running as root)\n- Interface is busy or unavailable\n- Invalid capture parameters", *ifaceName, errOpenLive)
 		}
 		defer handle.Close()
-
-		// Generate appropriate BPF filter based on ERSPAN mode
+		
+		// Generate and apply BPF filter
 		effectiveFilter := generateBPFFilter()
 		if effectiveFilter != "" {
 			loggerInfo.Printf("Applying BPF filter: %s", effectiveFilter)
@@ -178,9 +353,13 @@ func main() {
 				loggerInfo.Fatalf("Error applying BPF filter '%s': %v", effectiveFilter, err)
 			}
 		}
+		
 		linkType = handle.LinkType()
 		packetSource = gopacket.NewPacketSource(handle, linkType)
 		loggerInfo.Printf("Live capture started on interface: %s with LinkType: %s", *ifaceName, linkType.String())
+		
+		// Initialize capture statistics if enabled
+		initCaptureStats()
 	} else {
 		loggerInfo.Fatal("No input source specified (file or interface). Exiting.")
 	}
@@ -189,17 +368,28 @@ func main() {
 	packetCount := 0
 	for packet := range packetSource.Packets() {
 		packetCount++
+		
+		// Check if packet was truncated (only for live capture)
+		packetTruncated := false
+		if *ifaceName != "" && packet.Metadata() != nil {
+			packetTruncated = packet.Metadata().Truncated
+		}
+		
 		processPacket(packet, parsedStartSipPort, parsedEndSipPort, linkType)
-		if packetCount%1000 == 0 {
-			if *debug {
-				loggerDebug.Printf("Processed %d packets...", packetCount)
-			} else if packetCount%10000 == 0 {
-				loggerInfo.Printf("Processed %d packets...", packetCount)
-			}
+		
+		// Update capture statistics if enabled (no other logging here)
+		if *captureStats && *ifaceName != "" && handle != nil {
+			updateCaptureStats(handle, packetTruncated)
 		}
 	}
 
 	loggerInfo.Printf("Finished processing. Total packets processed: %d", packetCount)
+
+	// Final capture statistics for live capture
+	if *captureStats && *ifaceName != "" && handle != nil {
+		stopCaptureStats(handle)
+	}
+
 	closeAllActiveCalls(time.Now()) // Definition will be in call_management.go or similar
 	if *enableFragmentation {
 		globalFragmentManager.Stop()

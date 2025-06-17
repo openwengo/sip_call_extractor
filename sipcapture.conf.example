@@ -29,6 +29,30 @@ filter=udp
 # This parameter is required and has no default
 sip-ports-range=
 
+[capture]
+# Snapshot length in bytes for live capture
+# Controls the maximum number of bytes captured per packet
+# Similar to tcpdump's -s option
+# 0 = use default maximum (262144 bytes)
+# Range: 0-262144 bytes
+# Default: 2000
+snapshot-length=2000
+
+# OS capture buffer size in KiB for live capture
+# Controls the kernel buffer size for packet capture
+# Similar to tcpdump's -B option
+# 0 = use system default
+# Default: 0
+buffer-size=0
+
+# Enable periodic capture statistics reporting
+# When enabled, prints statistics every 10 seconds to stderr
+# and final statistics when the program exits
+# Only applies to live capture mode (interface specified)
+# Values: true, false
+# Default: false
+capture-stats=false
+
 [output]
 # Directory to save extracted PCAP files and CSV logs
 # Default: . (current directory)

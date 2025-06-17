@@ -46,6 +46,11 @@ var (
 	enableFragmentation *bool
 	fragmentTimeout     *time.Duration
 	maxFragments        *int
+
+	// Live capture flags
+	snapshotLength *int
+	bufferSize     *int
+	captureStats   *bool
 )
 
 // Global variable to control CSV s3_location column
@@ -118,6 +123,13 @@ func initFlags() {
 	fragmentTimeout = flag.Duration("fragment-timeout", config.FragmentTimeout, "Timeout for IP fragment reassembly")
 	maxFragments = flag.Int("max-fragments", config.MaxFragments, "Maximum number of concurrent fragment reassembly operations")
 
+	// Live capture flags
+	snapshotLength = flag.Int("s", config.SnapshotLength, "Snapshot length in bytes (0=262144, max=262144)")
+	flag.IntVar(snapshotLength, "snapshot-length", config.SnapshotLength, "Snapshot length in bytes (0=262144, max=262144)")
+	bufferSize = flag.Int("B", config.BufferSize, "OS capture buffer size in KiB (0=system default)")
+	flag.IntVar(bufferSize, "buffer-size", config.BufferSize, "OS capture buffer size in KiB (0=system default)")
+	captureStats = flag.Bool("capture-stats", config.CaptureStats, "Enable periodic capture statistics reporting")
+
 	// Parse all flags with the new defaults
 	flag.Parse()
 }
@@ -169,6 +181,26 @@ func validateArgs() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		flag.Usage()
 		os.Exit(1)
+	}
+
+	// Live capture validation (only for interface mode)
+	if *ifaceName != "" {
+		if *snapshotLength < 0 || *snapshotLength > 262144 {
+			fmt.Fprintln(os.Stderr, "Error: --snapshot-length must be between 0 and 262144 bytes (0=default 262144).")
+			flag.Usage()
+			os.Exit(1)
+		}
+		if *bufferSize < 0 {
+			fmt.Fprintln(os.Stderr, "Error: --buffer-size cannot be negative.")
+			flag.Usage()
+			os.Exit(1)
+		}
+	} else {
+		// Warn if live capture parameters are used with file input
+		config, _ := LoadConfig("") // Get default config for comparison
+		if *snapshotLength != config.SnapshotLength || *bufferSize != config.BufferSize || *captureStats {
+			fmt.Fprintln(os.Stderr, "Warning: Live capture parameters (--snapshot-length, --buffer-size, --capture-stats) are ignored when reading from file.")
+		}
 	}
 }
 
