@@ -198,19 +198,20 @@ func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst 
 			}
 
 			call = &Call{
-				CallID:           callID,
-				StartTime:        packet.Metadata().Timestamp,
-				OutputFilename:   outputFilename,
-				SIPFrom:          fromHeader,
-				SIPTo:            toHeader,
-				SDPPtime:         20, // Default
+				CallID:         callID,
+				StartTime:      packet.Metadata().Timestamp,
+				OutputFilename: outputFilename,
+				SIPFrom:        fromHeader,
+				SIPTo:          toHeader,
+				SDPPtime:       20, // Default
 				LastActivityTime: packet.Metadata().Timestamp,
-				PcapWriter:       pcapWriter,
-				PcapFile:         pcapFile,
-				MediaSessions:    make([]MediaSession, 0),
-				RTPStreams:       make(map[uint32]*RTPStreamStats),
-				ERSPANSessions:   make(map[uint16]*ERSPANSessionInfo),
+				PcapWriter:     pcapWriter,
+				PcapFile:       pcapFile,
+				MediaSessions:  make([]MediaSession, 0),
+				RTPStreams:     make(map[uint32]*RTPStreamStats),
+				ERSPANSessions: make(map[uint16]*ERSPANSessionInfo),
 			}
+			call.ShouldClearPayload = shouldClearPayloadForCall(call)
 			activeCalls[callID] = call
 			loggerInfo.Printf("New call initiated: Call-ID=%s, From=%s, To=%s. Output PCAP: %s", callID, fromHeader, toHeader, fullOutputPath)
 

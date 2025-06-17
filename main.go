@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"runtime/pprof"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -203,6 +204,7 @@ func main() {
 	compileRegexPatterns() // From cli.go - compile RTP payload clearing regex patterns
 	setupLogging()
 
+setupSignalHandlers()
 	loggerInfo.Println("SIP Call Extractor - Go Version - Starting...")
 	if *debug { // *debug from cli.go
 		loggerDebug.Println("Debug logging enabled.")
@@ -249,7 +251,6 @@ func main() {
 	} else {
 		loggerInfo.Println("Inactive call monitoring is disabled as timeout is set to 0 or less.")
 	}
-
 	// Graceful shutdown handling
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -549,5 +550,74 @@ func closeAllActiveCalls(endTime time.Time) {
 		activeCalls = make(map[string]*Call) // Clear the map
 	} else {
 		loggerInfo.Println("No active calls to close at the end of processing.")
+	}
+}
+func setupSignalHandlers() {
+	profSigs := make(chan os.Signal, 1)
+	signal.Notify(profSigs, syscall.SIGUSR1, syscall.SIGUSR2)
+
+	go func() {
+		for sig := range profSigs {
+			switch sig {
+			case syscall.SIGUSR1:
+				dumpCPUProfile()
+			case syscall.SIGUSR2:
+				dumpMemoryAndGoroutineProfiles()
+			}
+		}
+	}()
+}
+
+func dumpCPUProfile() {
+	cpuProfilePath := "cpu.prof"
+	f, err := os.Create(cpuProfilePath)
+	if err != nil {
+		loggerInfo.Printf("Could not create CPU profile file: %v", err)
+		return
+	}
+	defer f.Close()
+
+	loggerInfo.Println("Starting CPU profile...")
+	if err := pprof.StartCPUProfile(f); err != nil {
+		loggerInfo.Printf("Could not start CPU profile: %v", err)
+		return
+	}
+
+	time.Sleep(30 * time.Second)
+	pprof.StopCPUProfile()
+	loggerInfo.Printf("CPU profile written to %s", cpuProfilePath)
+}
+
+func dumpMemoryAndGoroutineProfiles() {
+	// Memory profile
+	memProfilePath := "mem.prof"
+	f, err := os.Create(memProfilePath)
+	if err != nil {
+		loggerInfo.Printf("Could not create memory profile file: %v", err)
+		return
+	}
+	defer f.Close()
+
+	if err := pprof.WriteHeapProfile(f); err != nil {
+		loggerInfo.Printf("Could not write memory profile: %v", err)
+		return
+	}
+	loggerInfo.Printf("Memory profile written to %s", memProfilePath)
+
+	// Goroutine profile
+	goroutineProfilePath := "goroutine.prof"
+	fg, err := os.Create(goroutineProfilePath)
+	if err != nil {
+		loggerInfo.Printf("Could not create goroutine profile file: %v", err)
+		return
+	}
+	defer fg.Close()
+
+	if p := pprof.Lookup("goroutine"); p != nil {
+		if err := p.WriteTo(fg, 1); err != nil {
+			loggerInfo.Printf("Could not write goroutine profile: %v", err)
+		} else {
+			loggerInfo.Printf("Goroutine profile written to %s", goroutineProfilePath)
+		}
 	}
 }

@@ -36,7 +36,7 @@ func shouldClearPayloadForCall(call *Call) bool {
 		return true
 	}
 	if noRtpDumpForFromRegexp != nil && noRtpDumpForFromRegexp.MatchString(call.SIPFrom) {
-		loggerDebug.Printf("Don't dump rtp for call %s because %s  matches %s", call.CallID,noRtpDumpExceptForFromRegexp.String(),call.SIPFrom)
+		loggerDebug.Printf("Don't dump rtp for call %s because %s  matches %s", call.CallID,noRtpDumpForFromRegexp.String(),call.SIPFrom)
 		return true
 	}
 	if noRtpDumpForToRegexp != nil && noRtpDumpForToRegexp.MatchString(call.SIPTo) {
@@ -213,14 +213,14 @@ func handleRtpPacket(packet gopacket.Packet, rtpPayload []byte, ipSrc, ipDst str
 
 	// --- Process RTP for currentCallState ---
 	
-	if (shouldClearPayloadForCall(currentCallState)) {
+	if currentCallState.ShouldClearPayload {
 		loggerDebug.Printf("Do not dump rtp for call %s", currentCallState.CallID)
 	} else {
 		loggerDebug.Printf("Dump rtp for call %s", currentCallState.CallID)
 	}
 
-	// Check if RTP payload should be cleared for privacy before writing packet	
-	if ((!shouldClearPayloadForCall(currentCallState)) && (currentCallState.PcapWriter != nil)) { // Check PcapWriter, not PcapFile, as PcapFile might be closed by SIP BYE
+	// Check if RTP payload should be cleared for privacy before writing packet
+	if !currentCallState.ShouldClearPayload && currentCallState.PcapWriter != nil { // Check PcapWriter, not PcapFile, as PcapFile might be closed by SIP BYE
 		errWrite := currentCallState.PcapWriter.WritePacket(packet.Metadata().CaptureInfo, packet.Data())
 		if errWrite != nil {
 			loggerInfo.Printf("Error writing RTP packet to PCAP for call %s (file %s): %v", currentCallState.CallID, currentCallState.OutputFilename, errWrite)

@@ -9,21 +9,22 @@ import (
 
 // Call holds information about an active SIP call.
 type Call struct {
-	CallID           string
-	StartTime        time.Time
-	OutputFilename   string
-	SIPFrom          string
-	SIPTo            string
-	SDPPtime         int // default 20ms, updated from SDP
-	LastActivityTime time.Time
-	MediaSessions    []MediaSession
-	RTPStreams       map[uint32]*RTPStreamStats
-	PcapWriter       *pcapgo.Writer // For writing individual call PCAPs
-	PcapFile         *os.File       // Underlying file for the PcapWriter, to allow explicit close
+	CallID             string
+	StartTime          time.Time
+	OutputFilename     string
+	SIPFrom            string
+	SIPTo              string
+	SDPPtime           int // default 20ms, updated from SDP
+	LastActivityTime   time.Time
+	ShouldClearPayload bool
+	MediaSessions      []MediaSession
+	RTPStreams         map[uint32]*RTPStreamStats
+	PcapWriter         *pcapgo.Writer // For writing individual call PCAPs
+	PcapFile           *os.File       // Underlying file for the PcapWriter, to allow explicit close
 	// Mutex           sync.RWMutex   // For concurrent access to call data (if needed per call)
-	
+
 	// ERSPAN fields
-	ERSPANSessions   map[uint16]*ERSPANSessionInfo // Key: SpanID
+	ERSPANSessions map[uint16]*ERSPANSessionInfo // Key: SpanID
 }
 
 // ERSPANSessionInfo holds information about ERSPAN sessions associated with a call
