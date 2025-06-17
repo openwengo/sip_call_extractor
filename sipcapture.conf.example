@@ -124,7 +124,9 @@ auto-upload-to-s3=false
 
 # S3 URI prefix for uploads
 # Format: s3://bucket/prefix/
+# Supports {hostname} macro which will be replaced with output of 'hostname -s'
 # Example: s3://my-sipcapture-bucket/captures/
+# Example with hostname: s3://my-sipcapture-bucket/captures/{hostname}/
 # Default: (empty - required if auto-upload-to-s3 is true)
 s3-uri=
 

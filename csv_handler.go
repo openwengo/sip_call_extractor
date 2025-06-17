@@ -24,39 +24,63 @@ func initializeCSVs() error {
 
 	// Initialize Detected Calls CSV
 	detectedCallsPath := filepath.Join(*outputDir, *detectedCallsFilename) // *detectedCallsFilename from cli.go
-	detectedCallsFile, err = os.Create(detectedCallsPath)
+	
+	// Check if file exists to determine if we need to write headers
+	_, err = os.Stat(detectedCallsPath)
+	fileExists := !os.IsNotExist(err)
+	
+	// Open file in append mode if it exists, create if it doesn't
+	detectedCallsFile, err = os.OpenFile(detectedCallsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		return fmt.Errorf("failed to create detected calls CSV file '%s': %w", detectedCallsPath, err)
+		return fmt.Errorf("failed to open detected calls CSV file '%s': %w", detectedCallsPath, err)
 	}
 	detectedCallsCSV = csv.NewWriter(detectedCallsFile)
-	headersDetected := []string{"call_id", "start_timestamp", "output_pcap_filename", "sip_from", "sip_to", "s3_location"}
-	if err := detectedCallsCSV.Write(headersDetected); err != nil {
-		detectedCallsFile.Close() // Close file on error
-		return fmt.Errorf("failed to write header to detected calls CSV '%s': %w", detectedCallsPath, err)
+	
+	// Only write headers if file is new
+	if !fileExists {
+		headersDetected := []string{"call_id", "start_timestamp", "output_pcap_filename", "sip_from", "sip_to", "s3_location"}
+		if err := detectedCallsCSV.Write(headersDetected); err != nil {
+			detectedCallsFile.Close() // Close file on error
+			return fmt.Errorf("failed to write header to detected calls CSV '%s': %w", detectedCallsPath, err)
+		}
+		detectedCallsCSV.Flush()
+		loggerInfo.Printf("Initialized new Detected Calls CSV at: %s", detectedCallsPath) // loggerInfo from main.go (or logging.go later)
+	} else {
+		loggerInfo.Printf("Appending to existing Detected Calls CSV at: %s", detectedCallsPath) // loggerInfo from main.go (or logging.go later)
 	}
-	detectedCallsCSV.Flush()
-	loggerInfo.Printf("Initialized Detected Calls CSV at: %s", detectedCallsPath) // loggerInfo from main.go (or logging.go later)
 
 	// Initialize Statistics CSV
 	statsPath := filepath.Join(*outputDir, *statsFilename) // *statsFilename from cli.go
-	statsFile, err = os.Create(statsPath)
+	
+	// Check if file exists to determine if we need to write headers
+	_, err = os.Stat(statsPath)
+	statsFileExists := !os.IsNotExist(err)
+	
+	// Open file in append mode if it exists, create if it doesn't
+	statsFile, err = os.OpenFile(statsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		return fmt.Errorf("failed to create statistics CSV file '%s': %w", statsPath, err)
+		return fmt.Errorf("failed to open statistics CSV file '%s': %w", statsPath, err)
 	}
 	statsCSV = csv.NewWriter(statsFile)
-	headersStats := []string{
-		"call_id", "start_timestamp", "output_pcap_filename", "sip_from", "sip_to",
-		"ssrc_hex", "src_rtp_endpoint", "dst_rtp_endpoint",
-		"rtp_packet_count", "expected_rtp_packets", "lost_packets",
-		"out_of_order_count", "duplicate_count", "max_delta_ms", "min_delta_ms",
-		"avg_delta_ms", "ptime_ms", "s3_location",
+	
+	// Only write headers if file is new
+	if !statsFileExists {
+		headersStats := []string{
+			"call_id", "start_timestamp", "output_pcap_filename", "sip_from", "sip_to",
+			"ssrc_hex", "src_rtp_endpoint", "dst_rtp_endpoint",
+			"rtp_packet_count", "expected_rtp_packets", "lost_packets",
+			"out_of_order_count", "duplicate_count", "max_delta_ms", "min_delta_ms",
+			"avg_delta_ms", "ptime_ms", "s3_location",
+		}
+		if err := statsCSV.Write(headersStats); err != nil {
+			statsFile.Close() // Close file on error
+			return fmt.Errorf("failed to write header to statistics CSV '%s': %w", statsPath, err)
+		}
+		statsCSV.Flush()
+		loggerInfo.Printf("Initialized new Statistics CSV at: %s", statsPath) // loggerInfo from main.go (or logging.go later)
+	} else {
+		loggerInfo.Printf("Appending to existing Statistics CSV at: %s", statsPath) // loggerInfo from main.go (or logging.go later)
 	}
-	if err := statsCSV.Write(headersStats); err != nil {
-		statsFile.Close() // Close file on error
-		return fmt.Errorf("failed to write header to statistics CSV '%s': %w", statsPath, err)
-	}
-	statsCSV.Flush()
-	loggerInfo.Printf("Initialized Statistics CSV at: %s", statsPath) // loggerInfo from main.go (or logging.go later)
 
 	return nil
 }

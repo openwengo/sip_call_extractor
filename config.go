@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -255,7 +256,14 @@ func setConfigValue(config *Config, key, value string) error {
 		}
 		config.AutoUploadToS3 = autoUpload
 	case "s3-uri":
-		config.S3URI = value
+		expandedURI, err := expandHostnameMacros(value)
+		if err != nil {
+			// Log warning but continue with original value
+			fmt.Fprintf(os.Stderr, "Warning: Failed to expand hostname macro in s3-uri: %v\n", err)
+			config.S3URI = value
+		} else {
+			config.S3URI = expandedURI
+		}
 	case "s3-region":
 		config.S3Region = value
 
@@ -328,4 +336,36 @@ func setConfigValue(config *Config, key, value string) error {
 	}
 
 	return nil
+}
+// getHostnameShort executes 'hostname -s' and returns the short hostname
+func getHostnameShort() (string, error) {
+	cmd := exec.Command("hostname", "-s")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to execute 'hostname -s': %w", err)
+	}
+	
+	hostname := strings.TrimSpace(string(output))
+	if hostname == "" {
+		return "", fmt.Errorf("hostname command returned empty string")
+	}
+	
+	return hostname, nil
+}
+
+// expandHostnameMacros replaces {hostname} macro with actual hostname in the input string
+func expandHostnameMacros(input string) (string, error) {
+	if !strings.Contains(input, "{hostname}") {
+		// No macro to expand, return as-is
+		return input, nil
+	}
+	
+	hostname, err := getHostnameShort()
+	if err != nil {
+		return "", fmt.Errorf("failed to get hostname for macro expansion: %w", err)
+	}
+	
+	// Replace all occurrences of {hostname} with the actual hostname
+	expanded := strings.ReplaceAll(input, "{hostname}", hostname)
+	return expanded, nil
 }

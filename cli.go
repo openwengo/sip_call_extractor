@@ -132,6 +132,16 @@ func initFlags() {
 
 	// Parse all flags with the new defaults
 	flag.Parse()
+	
+	// Apply hostname macro expansion to s3URI if provided via CLI
+	if *s3URI != "" {
+		expandedURI, err := expandHostnameMacros(*s3URI)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to expand hostname macro in s3-uri: %v\n", err)
+		} else {
+			*s3URI = expandedURI
+		}
+	}
 }
 
 func validateArgs() {
