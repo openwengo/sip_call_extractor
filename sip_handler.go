@@ -133,7 +133,7 @@ func parseSipHeaders(payload []byte) (callID, sipMethod, fromHeader, toHeader st
 				sdpPayload = []byte(actualBody[:currentContentLength])
 			} else {
 				sdpPayload = []byte(actualBody)
-				if *debug { // Assumes 'debug' and 'loggerDebug' are accessible (e.g. global or passed)
+				if *debug {
 					loggerDebug.Printf("CallID: %s - Content-Length %d > actual body %d. Using actual body.", callID, currentContentLength, len(actualBody))
 				}
 			}
@@ -158,7 +158,7 @@ func generateCallFilename(callID string) string {
 // handleSipPacket processes a packet identified as SIP.
 func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst string, srcPort, dstPort uint16, linkType layers.LinkType, erspanMeta *ERSPANMetadata) {
 	callID, sipMethod, fromHeader, toHeader, sdpData, err := parseSipHeaders(sipMsgPayload)
-	if err != nil {
+	if ((err != nil) || ( len(fromHeader) == 0 ) || ( len(toHeader) ==0 )) {
 		if *debug {
 			loggerDebug.Printf("Error parsing SIP headers (Src: %s:%d, Dst: %s:%d): %v. Payload: %s", ipSrc, srcPort, ipDst, dstPort, err, string(sipMsgPayload[:min(len(sipMsgPayload), 200)]))
 		}

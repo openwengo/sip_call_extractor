@@ -105,26 +105,26 @@ func resolveSnapshotLength(snaplen int) int {
 }
 
 // initCaptureStats initializes capture statistics tracking
-func initCaptureStats() {
+func initCaptureStats(handle *pcap.Handle) {
 	if *captureStats && *ifaceName != "" {
 		globalCaptureStats = &CaptureStats{
 			StartTime:      time.Now(),
 			LastReportTime: time.Now(),
 		}
-		
+
 		// Start periodic reporting every 10 seconds
 		captureStatsTimer = time.NewTimer(10 * time.Second)
-		go captureStatsReporter()
+		go captureStatsReporter(handle)
 	}
 }
 
 // captureStatsReporter handles periodic statistics reporting
-func captureStatsReporter() {
+func captureStatsReporter(handle *pcap.Handle) {
 	for {
 		select {
 		case <-captureStatsTimer.C:
 			if globalCaptureStats != nil {
-				reportCaptureStats(false)
+				reportCaptureStats(handle, false)
 				captureStatsTimer.Reset(10 * time.Second)
 			}
 		}
@@ -132,22 +132,27 @@ func captureStatsReporter() {
 }
 
 // reportCaptureStats reports current capture statistics
-func reportCaptureStats(final bool) {
+func reportCaptureStats(handle *pcap.Handle, final bool) {
 	if globalCaptureStats == nil {
 		return
 	}
-	
+
+	// Update stats from the handle if provided
+	if handle != nil {
+		updateCaptureStats(handle)
+	}
+
 	globalCaptureStats.mutex.RLock()
 	defer globalCaptureStats.mutex.RUnlock()
-	
+
 	now := time.Now()
 	duration := now.Sub(globalCaptureStats.StartTime)
-	
+
 	prefix := "CAPTURE STATS"
 	if final {
 		prefix = "FINAL CAPTURE STATS"
 	}
-	
+
 	fmt.Fprintf(os.Stderr, "%s: Duration=%v, Received=%d, Dropped=%d, IfDropped=%d, Truncated=%d\n",
 		prefix,
 		duration.Round(time.Second),
@@ -158,12 +163,13 @@ func reportCaptureStats(final bool) {
 	)
 }
 
-// updateCaptureStats updates statistics from pcap handle and packet processing
-func updateCaptureStats(handle *pcap.Handle, packetTruncated bool) {
+// updateCaptureStats updates statistics from pcap handle.
+// It should be called before reporting stats.
+func updateCaptureStats(handle *pcap.Handle) {
 	if globalCaptureStats == nil {
 		return
 	}
-	
+
 	// Get current stats from pcap handle
 	stats, err := handle.Stats()
 	if err != nil {
@@ -172,17 +178,23 @@ func updateCaptureStats(handle *pcap.Handle, packetTruncated bool) {
 		}
 		return
 	}
-	
+
 	globalCaptureStats.mutex.Lock()
 	defer globalCaptureStats.mutex.Unlock()
-	
+
 	globalCaptureStats.PacketsReceived = uint64(stats.PacketsReceived)
 	globalCaptureStats.PacketsDropped = uint64(stats.PacketsDropped)
 	globalCaptureStats.PacketsIfDropped = uint64(stats.PacketsIfDropped)
-	
-	if packetTruncated {
-		globalCaptureStats.PacketsTruncated++
+}
+
+// incrementTruncatedPacketCount increments the truncated packet counter.
+func incrementTruncatedPacketCount() {
+	if globalCaptureStats == nil {
+		return
 	}
+	globalCaptureStats.mutex.Lock()
+	defer globalCaptureStats.mutex.Unlock()
+	globalCaptureStats.PacketsTruncated++
 }
 
 // stopCaptureStats stops statistics reporting and prints final stats
@@ -191,10 +203,9 @@ func stopCaptureStats(handle *pcap.Handle) {
 		if captureStatsTimer != nil {
 			captureStatsTimer.Stop()
 		}
-		
+
 		// Final update and report
-		updateCaptureStats(handle, false)
-		reportCaptureStats(true)
+		reportCaptureStats(handle, true)
 	}
 }
 
@@ -271,7 +282,7 @@ setupSignalHandlers()
 				if captureStatsTimer != nil {
 					captureStatsTimer.Stop()
 				}
-				reportCaptureStats(true)
+				reportCaptureStats(nil, true)
 			}
 		}
 		
@@ -364,7 +375,7 @@ setupSignalHandlers()
 		loggerInfo.Printf("Live capture started on interface: %s with LinkType: %s", *ifaceName, linkType.String())
 		
 		// Initialize capture statistics if enabled
-		initCaptureStats()
+		initCaptureStats(handle)
 	} else {
 		loggerInfo.Fatal("No input source specified (file or interface). Exiting.")
 	}
@@ -374,18 +385,12 @@ setupSignalHandlers()
 	for packet := range packetSource.Packets() {
 		packetCount++
 		
-		// Check if packet was truncated (only for live capture)
-		packetTruncated := false
-		if *ifaceName != "" && packet.Metadata() != nil {
-			packetTruncated = packet.Metadata().Truncated
+		// Check if packet was truncated and update stats if so
+		if *captureStats && *ifaceName != "" && packet.Metadata() != nil && packet.Metadata().Truncated {
+			incrementTruncatedPacketCount()
 		}
-		
+
 		processPacket(packet, parsedStartSipPort, parsedEndSipPort, linkType)
-		
-		// Update capture statistics if enabled (no other logging here)
-		if *captureStats && *ifaceName != "" && handle != nil {
-			updateCaptureStats(handle, packetTruncated)
-		}
 	}
 
 	loggerInfo.Printf("Finished processing. Total packets processed: %d", packetCount)
@@ -432,6 +437,7 @@ func processPacket(packet gopacket.Packet, startSipPort, endSipPort uint16, link
 }
 
 func processInnerPacket(packet gopacket.Packet, startSipPort, endSipPort uint16, linkType layers.LinkType, erspanMeta *ERSPANMetadata) {
+	
 	// Handle IPv4 fragmentation first
 	if *enableFragmentation {
 		if ipLayer := packet.Layer(layers.LayerTypeIPv4); ipLayer != nil {
@@ -450,7 +456,14 @@ func processInnerPacket(packet gopacket.Packet, startSipPort, endSipPort uint16,
 	ipLayer := packet.Layer(layers.LayerTypeIPv4)
 	var ipSrc, ipDst string
 	if ipLayer != nil {
-		ip, _ := ipLayer.(*layers.IPv4)
+		ip, ok := ipLayer.(*layers.IPv4)
+		if !ok {
+			if *debug {
+				loggerDebug.Println("Failed to cast layer to *layers.IPv4")
+			}
+			return
+		}
+
 		ipSrc = ip.SrcIP.String()
 		ipDst = ip.DstIP.String()
 	} else {

@@ -105,7 +105,13 @@ func handleGREPacket(originalPacket gopacket.Packet, greLayer gopacket.Layer) (g
 			}
 
 			// Create inner packet with proper CaptureInfo
-			innerPacket := gopacket.NewPacket(gre.Payload, layers.LayerTypeEthernet, gopacket.Default)
+			payload := make([]byte, len(gre.Payload))
+			copy(payload, gre.Payload)
+			innerPacket := gopacket.NewPacket(payload, layers.LayerTypeEthernet, 
+				gopacket.DecodeOptions{
+					Lazy:   true,
+					NoCopy: true,
+				})
 			if innerPacket.ErrorLayer() != nil {
 				if *debug {
 					loggerDebug.Printf("Error parsing inner packet for ERSPAN Type I: %v", innerPacket.ErrorLayer().Error())
@@ -115,7 +121,8 @@ func handleGREPacket(originalPacket gopacket.Packet, greLayer gopacket.Layer) (g
 			
 			// Fix CaptureInfo to match actual data length and preserve timestamp
 			payloadLen := len(gre.Payload)
-			innerPacket.Metadata().CaptureInfo.CaptureLength = payloadLen
+
+			innerPacket.Metadata().CaptureInfo.CaptureLength = payloadLen //originalPacket.Metadata().CaptureInfo.CaptureLength - 38
 			innerPacket.Metadata().CaptureInfo.Length = payloadLen
 			innerPacket.Metadata().Timestamp = originalPacket.Metadata().Timestamp
 			
@@ -126,6 +133,8 @@ func handleGREPacket(originalPacket gopacket.Packet, greLayer gopacket.Layer) (g
 					innerPacket.Metadata().CaptureInfo.Length,
 					len(innerPacket.Data()))
 			}
+
+
 			return innerPacket, metadata
 		}
 	default:
