@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -10,10 +9,10 @@ func removeMediaSessionsFromGlobalMap(call *Call) {
 	activeMediaSessionsMutex.Lock()
 	defer activeMediaSessionsMutex.Unlock()
 	for _, session := range call.MediaSessions {
-		lookupKey := fmt.Sprintf("%s:%d", session.IPAddress, session.Port)
+		lookupKey := MediaSessionKey{IP: session.IPAddress, Port: session.Port}
 		delete(activeMediaSessions, lookupKey)
 		if *debug {
-			loggerDebug.Printf("CallID: %s - Removed media session from global map: %s", call.CallID, lookupKey)
+			loggerDebug.Printf("CallID: %s - Removed media session from global map: %s:%d", call.CallID, session.IPAddress, session.Port)
 		}
 	}
 }

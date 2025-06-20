@@ -19,15 +19,21 @@ func shouldClearPayloadForCall(call *Call) bool {
 	
 	// Priority 2: "Except-For" (Preservation) Rule - if any except-for pattern matches, DO NOT clear
 	if noRtpDumpExceptForCallIdRegexp != nil && noRtpDumpExceptForCallIdRegexp.MatchString(call.CallID) {
-		loggerDebug.Printf("Dump rtp for call %s because %s matches %s", call.CallID,noRtpDumpExceptForCallIdRegexp.String(),call.CallID)
+		if *debug {
+			loggerDebug.Printf("Dump rtp for call %s because %s matches %s", call.CallID,noRtpDumpExceptForCallIdRegexp.String(),call.CallID)
+		}
 		return false
 	}
 	if noRtpDumpExceptForFromRegexp != nil && noRtpDumpExceptForFromRegexp.MatchString(call.SIPFrom) {
-		loggerDebug.Printf("Dump rtp for call %s because %s matches %s", call.CallID,noRtpDumpExceptForFromRegexp.String(),call.SIPFrom)
+		if *debug {
+			loggerDebug.Printf("Dump rtp for call %s because %s matches %s", call.CallID,noRtpDumpExceptForFromRegexp.String(),call.SIPFrom)
+		}
 		return false
 	}
 	if noRtpDumpExceptForToRegexp != nil && noRtpDumpExceptForToRegexp.MatchString(call.SIPTo) {
-		loggerDebug.Printf("Dump rtp for call %s because %s matches %s", call.CallID,noRtpDumpExceptForToRegexp.String(),call.SIPTo)
+		if *debug {
+			loggerDebug.Printf("Dump rtp for call %s because %s matches %s", call.CallID,noRtpDumpExceptForToRegexp.String(),call.SIPTo)
+		}
 		return false
 	}
 	
@@ -36,11 +42,15 @@ func shouldClearPayloadForCall(call *Call) bool {
 		return true
 	}
 	if noRtpDumpForFromRegexp != nil && noRtpDumpForFromRegexp.MatchString(call.SIPFrom) {
-		loggerDebug.Printf("Don't dump rtp for call %s because %s  matches %s", call.CallID,noRtpDumpForFromRegexp.String(),call.SIPFrom)
+		if *debug {
+			loggerDebug.Printf("Don't dump rtp for call %s because %s  matches %s", call.CallID,noRtpDumpForFromRegexp.String(),call.SIPFrom)
+		}
 		return true
 	}
 	if noRtpDumpForToRegexp != nil && noRtpDumpForToRegexp.MatchString(call.SIPTo) {
-		loggerDebug.Printf("Don't dump rtp for call %s because %s  matches %s", call.CallID,noRtpDumpForToRegexp.String(),call.SIPTo)
+		if *debug {
+			loggerDebug.Printf("Don't dump rtp for call %s because %s  matches %s", call.CallID,noRtpDumpForToRegexp.String(),call.SIPTo)
+		}
 		return true
 	}
 	
@@ -49,11 +59,15 @@ func shouldClearPayloadForCall(call *Call) bool {
 		return true
 	}
 	if *noRtpDumpExceptForFromPattern != "" && (noRtpDumpExceptForFromRegexp == nil || !noRtpDumpExceptForFromRegexp.MatchString(call.SIPFrom)) {
-		loggerDebug.Printf("Don't dump rtp for call %s because %s  does not matches %s", call.CallID,noRtpDumpExceptForFromRegexp.String(),call.SIPFrom)
+		if *debug {
+			loggerDebug.Printf("Don't dump rtp for call %s because %s  does not matches %s", call.CallID,noRtpDumpExceptForFromRegexp.String(),call.SIPFrom)
+		}
 		return true
 	}
 	if *noRtpDumpExceptForToPattern != "" && (noRtpDumpExceptForToRegexp == nil || !noRtpDumpExceptForToRegexp.MatchString(call.SIPTo)) {
-		loggerDebug.Printf("Don't dump rtp for call %s because %s  does not matches %s", call.CallID,noRtpDumpExceptForToRegexp.String(),call.SIPTo)		
+		if *debug {
+			loggerDebug.Printf("Don't dump rtp for call %s because %s  does not matches %s", call.CallID,noRtpDumpExceptForToRegexp.String(),call.SIPTo)
+		}
 		return true
 	}
 	
@@ -169,24 +183,25 @@ func handleRtpPacket(packet gopacket.Packet, rtpPayload []byte, ipSrc, ipDst str
 	activeCallsMutex.RLock() // Start with a read lock to find the call
 
 	var matchedCall *Call
-	var rtpDestIPMatched, rtpDestPortMatchedStr string
+	var rtpDestIPMatched string
+	var rtpDestPortMatched uint16
 
 	// Efficiently find the call using the global media session map
-	lookupKeyDst := fmt.Sprintf("%s:%d", ipDst, dstPort)
-	lookupKeySrc := fmt.Sprintf("%s:%d", ipSrc, srcPort)
+	lookupKeyDst := MediaSessionKey{IP: ipDst, Port: dstPort}
+	lookupKeySrc := MediaSessionKey{IP: ipSrc, Port: srcPort}
 
 	activeMediaSessionsMutex.RLock()
 	call, found := activeMediaSessions[lookupKeyDst]
 	if found {
 		matchedCall = call
 		rtpDestIPMatched = ipDst
-		rtpDestPortMatchedStr = strconv.Itoa(int(dstPort))
+		rtpDestPortMatched = dstPort
 	} else {
 		call, found = activeMediaSessions[lookupKeySrc]
 		if found {
 			matchedCall = call
 			rtpDestIPMatched = ipSrc
-			rtpDestPortMatchedStr = strconv.Itoa(int(srcPort))
+			rtpDestPortMatched = srcPort
 		}
 	}
 	activeMediaSessionsMutex.RUnlock()
@@ -213,10 +228,12 @@ func handleRtpPacket(packet gopacket.Packet, rtpPayload []byte, ipSrc, ipDst str
 
 	// --- Process RTP for currentCallState ---
 	
-	if currentCallState.ShouldClearPayload {
-		loggerDebug.Printf("Do not dump rtp for call %s", currentCallState.CallID)
-	} else {
-		loggerDebug.Printf("Dump rtp for call %s", currentCallState.CallID)
+	if *debug {
+		if currentCallState.ShouldClearPayload {
+			loggerDebug.Printf("Do not dump rtp for call %s", currentCallState.CallID)
+		} else {
+			loggerDebug.Printf("Dump rtp for call %s", currentCallState.CallID)
+		}
 	}
 
 	// Check if RTP payload should be cleared for privacy before writing packet
@@ -252,7 +269,7 @@ func handleRtpPacket(packet gopacket.Packet, rtpPayload []byte, ipSrc, ipDst str
 
 	if *debug {
 		loggerDebug.Printf("CallID: %s - RTP Packet: %s:%d -> %s:%d (Matched Media: %s:%s) SSRC:0x%x, Seq:%d",
-			currentCallState.CallID, ipSrc, srcPort, ipDst, dstPort, rtpDestIPMatched, rtpDestPortMatchedStr, ssrc, seqNum)
+			currentCallState.CallID, ipSrc, srcPort, ipDst, dstPort, rtpDestIPMatched, strconv.Itoa(int(rtpDestPortMatched)), ssrc, seqNum)
 	}
 
 	streamStats, statsExists := currentCallState.RTPStreams[ssrc]

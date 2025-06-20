@@ -42,6 +42,13 @@ type MediaSession struct {
 	Port      uint16
 }
 
+// MediaSessionKey is a struct used as a key in the activeMediaSessions map.
+// Using a struct is more efficient than string concatenation.
+type MediaSessionKey struct {
+	IP   string
+	Port uint16
+}
+
 // RTPStreamStats holds statistics for an individual RTP stream.
 type RTPStreamStats struct {
 	SrcRTPEndpoint     string // e.g., "ip:port"

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 )
@@ -18,12 +17,12 @@ func isDuplicateMediaSession(sessions []MediaSession, newSession MediaSession) b
 
 // addMediaSessionToGlobalMap adds a media session to the global activeMediaSessions map
 func addMediaSessionToGlobalMap(session MediaSession, call *Call) {
-	lookupKey := fmt.Sprintf("%s:%d", session.IPAddress, session.Port)
+	lookupKey := MediaSessionKey{IP: session.IPAddress, Port: session.Port}
 	activeMediaSessionsMutex.Lock()
 	defer activeMediaSessionsMutex.Unlock()
 	activeMediaSessions[lookupKey] = call
 	if *debug {
-		loggerDebug.Printf("CallID: %s - Added media session to global map: %s", call.CallID, lookupKey)
+		loggerDebug.Printf("CallID: %s - Added media session to global map: %s:%d", call.CallID, session.IPAddress, session.Port)
 	}
 }
 

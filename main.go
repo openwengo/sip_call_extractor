@@ -25,7 +25,7 @@ var (
 	activeCallsMutex = &sync.RWMutex{}
 
 	// Global media session map for efficient RTP packet lookup
-	activeMediaSessions      = make(map[string]*Call)
+	activeMediaSessions      = make(map[MediaSessionKey]*Call)
 	activeMediaSessionsMutex = &sync.RWMutex{}
 
 	globalCallTimeout time.Duration
@@ -304,7 +304,8 @@ setupSignalHandlers()
 		}
 		defer handle.Close()
 		linkType = handle.LinkType()
-		packetSource = gopacket.NewPacketSource(handle, linkType)
+		packetSource = gopacket.NewPacketSource(handle, handle.LinkType())
+		packetSource.DecodeOptions.Lazy = true
 		loggerInfo.Printf("Successfully opened PCAP file: %s with LinkType: %s", *inputFile, linkType.String())
 	} else if *ifaceName != "" {
 		effectiveSnaplen := resolveSnapshotLength(*snapshotLength)
@@ -371,7 +372,8 @@ setupSignalHandlers()
 		}
 		
 		linkType = handle.LinkType()
-		packetSource = gopacket.NewPacketSource(handle, linkType)
+		packetSource = gopacket.NewPacketSource(handle, handle.LinkType())
+		packetSource.DecodeOptions.Lazy = true
 		loggerInfo.Printf("Live capture started on interface: %s with LinkType: %s", *ifaceName, linkType.String())
 		
 		// Initialize capture statistics if enabled
