@@ -7,10 +7,52 @@ import (
 	"time"
 )
 
-// calculateAndWriteRTPStats calculates derived RTP statistics and writes them to the stats CSV.
+// calculateAndWriteRTPStats calculates derived RTP statistics and writes them to the stats CSV or database.
 func calculateAndWriteRTPStats(call *Call, callEndTime time.Time) {
-	if statsCSV == nil { // statsCSV is from csv_handler.go
-		loggerInfo.Printf("CallID: %s - Statistics CSV writer not initialized. Skipping stats.", call.CallID)
+	dbEnabled := isDatabaseEnabled()
+	if *debug {
+		loggerDebug.Printf("DEBUG: Stats for call %s - Database enabled: %t, CSV available: %t", call.CallID, dbEnabled, statsCSV != nil)
+	}
+	
+	// Only write to CSV if database is not enabled
+	if statsCSV == nil && !dbEnabled {
+		loggerInfo.Printf("CallID: %s - Neither statistics CSV nor database available. Skipping stats.", call.CallID)
+		return
+	}
+	
+	if statsCSV == nil && dbEnabled {
+		// Database is enabled, CSV not needed - stats will be written to database
+		if *debug {
+			loggerDebug.Printf("DEBUG: CallID: %s - Using database for stats, CSV disabled", call.CallID)
+		}
+		// Convert RTP stats and update database
+		rtpStatsJSON := ConvertRTPStreamsToJSON(call.RTPStreams, call)
+		var s3Location string
+		if s3ParamsProvidedForCsv && *autoUploadToS3 {
+			s3Location = constructS3Location(*s3URI, call.OutputFilename)
+		}
+		if *debug {
+			loggerDebug.Printf("DEBUG: Calling UpdateCallInDatabase for call %s (CSV disabled path)", call.CallID)
+		}
+		UpdateCallInDatabase(call.CallID, call.SIPFrom, call.SIPTo, s3Location, rtpStatsJSON, &callEndTime, CallStateFinished)
+		return
+	}
+	
+	if dbEnabled {
+		// Database is enabled, skip CSV writing for regular stats
+		if *debug {
+			loggerDebug.Printf("DEBUG: CallID: %s - Database enabled, skipping CSV stats writing", call.CallID)
+		}
+		// Convert RTP stats and update database
+		rtpStatsJSON := ConvertRTPStreamsToJSON(call.RTPStreams, call)
+		var s3Location string
+		if s3ParamsProvidedForCsv && *autoUploadToS3 {
+			s3Location = constructS3Location(*s3URI, call.OutputFilename)
+		}
+		if *debug {
+			loggerDebug.Printf("DEBUG: Calling UpdateCallInDatabase for call %s (database enabled path)", call.CallID)
+		}
+		UpdateCallInDatabase(call.CallID, call.SIPFrom, call.SIPTo, s3Location, rtpStatsJSON, &callEndTime, CallStateFinished)
 		return
 	}
 
@@ -125,9 +167,14 @@ func calculateAndWriteRTPStats(call *Call, callEndTime time.Time) {
 }
 
 // writeFragmentStats writes fragmentation statistics to the stats CSV.
+// Note: Fragmentation stats should always go to CSV even when database is enabled.
 func writeFragmentStats() {
 	if !*enableFragmentation || statsCSV == nil {
 		return
+	}
+	
+	if *debug {
+		loggerDebug.Printf("DEBUG: Writing fragmentation stats to CSV (exception: always write to CSV regardless of database status)")
 	}
 
 	stats := globalFragmentManager.GetStats()

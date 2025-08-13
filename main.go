@@ -244,11 +244,62 @@ setupSignalHandlers()
 		loggerInfo.Printf("Fragmentation Handling Enabled: Timeout=%s, MaxFragments=%d", (*fragmentTimeout).String(), *maxFragments)
 	}
 
+	// Initialize database if configuration is provided
+	var dbConfig *DatabaseConfig
+	
+	// Check if DB_HOST environment variable is set (indicates database should be used)
+	dbHostFromEnv := os.Getenv("DB_HOST")
+	dbHostConfigured := (*databaseHost != "" || dbHostFromEnv != "")
+	
+	if *databaseHost != "" && *databaseUser != "" && *databaseName != "" {
+		// Log resolved instance ID for visibility
+		loggerInfo.Printf("Instance ID: %s", effectiveInstanceID)
+
+		dbConfig = &DatabaseConfig{
+			Host:               *databaseHost,
+			Port:               *databasePort,
+			User:               *databaseUser,
+			Password:           *databasePassword,
+			Database:           *databaseName,
+			SSLMode:            *databaseSSLMode,
+			MaxOpenConnections: *databaseMaxOpenConns,
+			MaxIdleConnections: *databaseMaxIdleConns,
+			ConnMaxLifetime:    *databaseConnLifetime,
+			InstanceID:         effectiveInstanceID,
+		}
+		
+		err := InitializeDatabase(dbConfig)
+		if err != nil {
+			// If DB_HOST is configured (via env var or config), exit immediately on connection failure
+			if dbHostConfigured {
+				loggerInfo.Fatalf("Database connection failed and DB_HOST is configured - exiting immediately: %v", err)
+			} else {
+				loggerInfo.Printf("Failed to initialize database, falling back to CSV: %v", err)
+				dbConfig = nil // Force CSV fallback
+			}
+		} else {
+			loggerInfo.Printf("Database initialized successfully")
+		}
+		defer CloseDatabase()
+	} else if dbHostConfigured {
+		// DB_HOST is set but other required parameters are missing
+		loggerInfo.Fatalf("DB_HOST is configured but missing required database parameters (user: '%s', name: '%s')",
+			*databaseUser, *databaseName)
+	}
+
+	// Initialize CSV files - they may be used as fallback or when database is not enabled
 	err = initializeCSVs() // From csv_handler.go
 	if err != nil {
 		loggerInfo.Fatalf("Failed to initialize CSV files: %v", err)
 	}
 	defer closeCSVs() // From csv_handler.go
+	
+	// Log the logging strategy being used
+	if isDatabaseEnabled() {
+		loggerInfo.Printf("Database capture enabled - calls will be logged to database only (except fragmentation stats)")
+	} else {
+		loggerInfo.Printf("Database not available - calls will be logged to CSV files")
+	}
 	globalCallTimeout = *callTimeout // *callTimeout from cli.go
 
 	if *enableFragmentation {
@@ -402,7 +453,13 @@ setupSignalHandlers()
 		stopCaptureStats(handle)
 	}
 
+	loggerInfo.Println("Starting final call cleanup before database closure...")
 	closeAllActiveCalls(time.Now()) // Definition will be in call_management.go or similar
+	loggerInfo.Println("Final call cleanup completed, database operations should be queued")
+	
+	// Ensure all database operations are completed before proceeding
+	FlushDatabaseOperations()
+	
 	if *enableFragmentation {
 		globalFragmentManager.Stop()
 		writeFragmentStats()

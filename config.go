@@ -23,6 +23,7 @@ type Config struct {
 	StatsFilename         string
 	CallTimeout           time.Duration
 	Debug                 bool
+	InstanceID            string // Instance identifier; defaults to hostname if empty
 
 	// RTP payload clearing parameters
 	NoRtpDump                        bool
@@ -53,6 +54,17 @@ type Config struct {
 	SnapshotLength int  // Snapshot length in bytes (0=262144, max=262144)
 	BufferSize     int  // OS capture buffer size in KiB (default: 0 = system default)
 	CaptureStats   bool // Enable capture statistics reporting (default: false)
+
+	// Database parameters
+	DatabaseHost         string
+	DatabasePort         int
+	DatabaseUser         string
+	DatabasePassword     string
+	DatabaseName         string
+	DatabaseSSLMode      string
+	DatabaseMaxOpenConns int
+	DatabaseMaxIdleConns int
+	DatabaseConnLifetime time.Duration
 }
 
 // DefaultConfig returns a Config struct with default values
@@ -68,6 +80,7 @@ func DefaultConfig() *Config {
 		StatsFilename:         "calls_statistics.csv",
 		CallTimeout:           5 * time.Minute,
 		Debug:                 false,
+		InstanceID:            "",
 
 		// RTP payload clearing defaults
 		NoRtpDump:                        false,
@@ -98,6 +111,17 @@ func DefaultConfig() *Config {
 		SnapshotLength: 2000, // Keep 2000 as default, but 0 will mean 262144
 		BufferSize:     0,    // 0 means use system default
 		CaptureStats:   false,
+
+		// Database defaults
+		DatabaseHost:         "",
+		DatabasePort:         5432,
+		DatabaseUser:         "",
+		DatabasePassword:     "",
+		DatabaseName:         "",
+		DatabaseSSLMode:      "require",
+		DatabaseMaxOpenConns: 25,
+		DatabaseMaxIdleConns: 10,
+		DatabaseConnLifetime: 1 * time.Hour,
 	}
 }
 
@@ -139,7 +163,39 @@ func LoadConfig(configPath string) (*Config, error) {
 		fmt.Fprintf(os.Stderr, "INFO: Loaded configuration from: %s\n", loadedFrom)
 	}
 
+	// Apply environment variable fallbacks for database configuration
+	applyDatabaseEnvVars(config)
+
 	return config, nil
+}
+
+// applyDatabaseEnvVars applies environment variable overrides for database configuration
+// Environment variables take precedence over config file values
+func applyDatabaseEnvVars(config *Config) {
+	// Environment variables override config file values
+	if envHost := os.Getenv("DB_HOST"); envHost != "" {
+		config.DatabaseHost = envHost
+	}
+	if envName := os.Getenv("DB_NAME"); envName != "" {
+		config.DatabaseName = envName
+	}
+	if envUser := os.Getenv("DB_USER"); envUser != "" {
+		config.DatabaseUser = envUser
+	}
+	if envPassword := os.Getenv("DB_PASSWORD"); envPassword != "" {
+		config.DatabasePassword = envPassword
+	}
+	if envSSLMode := os.Getenv("DB_SSL_MODE"); envSSLMode != "" {
+		config.DatabaseSSLMode = envSSLMode
+	}
+	// DB_PORT environment variable support
+	if envPort := os.Getenv("DB_PORT"); envPort != "" {
+		if port, err := strconv.Atoi(envPort); err == nil && port > 0 && port <= 65535 {
+			config.DatabasePort = port
+		} else {
+			fmt.Fprintf(os.Stderr, "WARNING: Invalid DB_PORT environment variable: %s\n", envPort)
+		}
+	}
 }
 
 // getXDGConfigPath returns the XDG config directory path for sipcapture
@@ -227,6 +283,8 @@ func setConfigValue(config *Config, key, value string) error {
 			return fmt.Errorf("invalid boolean for debug: %w", err)
 		}
 		config.Debug = debug
+	case "instance-id":
+		config.InstanceID = value
 
 	// RTP payload clearing parameters
 	case "no-rtp-dump":
@@ -330,6 +388,51 @@ func setConfigValue(config *Config, key, value string) error {
 			return fmt.Errorf("invalid boolean for capture-stats: %w", err)
 		}
 		config.CaptureStats = captureStats
+
+	// Database parameters
+	case "database-host":
+		config.DatabaseHost = value
+	case "database-port":
+		port, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid integer for database-port: %w", err)
+		}
+		if port <= 0 || port > 65535 {
+			return fmt.Errorf("database-port must be between 1 and 65535")
+		}
+		config.DatabasePort = port
+	case "database-user":
+		config.DatabaseUser = value
+	case "database-password":
+		config.DatabasePassword = value
+	case "database-name":
+		config.DatabaseName = value
+	case "database-ssl-mode":
+		config.DatabaseSSLMode = value
+	case "database-max-open-conns":
+		conns, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid integer for database-max-open-conns: %w", err)
+		}
+		if conns <= 0 {
+			return fmt.Errorf("database-max-open-conns must be greater than 0")
+		}
+		config.DatabaseMaxOpenConns = conns
+	case "database-max-idle-conns":
+		conns, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid integer for database-max-idle-conns: %w", err)
+		}
+		if conns <= 0 {
+			return fmt.Errorf("database-max-idle-conns must be greater than 0")
+		}
+		config.DatabaseMaxIdleConns = conns
+	case "database-conn-lifetime":
+		duration, err := time.ParseDuration(value)
+		if err != nil {
+			return fmt.Errorf("invalid duration for database-conn-lifetime: %w", err)
+		}
+		config.DatabaseConnLifetime = duration
 
 	default:
 		return fmt.Errorf("unknown configuration key: %s", key)

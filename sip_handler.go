@@ -215,7 +215,13 @@ func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst 
 			activeCalls[callID] = call
 			loggerInfo.Printf("New call initiated: Call-ID=%s, From=%s, To=%s. Output PCAP: %s", callID, fromHeader, toHeader, fullOutputPath)
 
-			if detectedCallsCSV != nil { // detectedCallsCSV from csv_handler.go
+			// Check if we should write to CSV or database exclusively
+			dbEnabled := isDatabaseEnabled()
+			if *debug {
+				loggerDebug.Printf("DEBUG: Call %s - Database enabled: %t, CSV available: %t", callID, dbEnabled, detectedCallsCSV != nil)
+			}
+			
+			if detectedCallsCSV != nil && !dbEnabled { // Only write to CSV if database is not enabled
 				record := []string{callID, call.StartTime.Format(time.RFC3339), outputFilename, fromHeader, toHeader}
 				
 				// Always add s3_location column
@@ -229,6 +235,22 @@ func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst 
 					loggerInfo.Printf("Error writing to detected_calls.csv for %s: %v", callID, err)
 				}
 				detectedCallsCSV.Flush()
+				
+				if *debug {
+					loggerDebug.Printf("DEBUG: Call %s written to detected_calls.csv (database disabled)", callID)
+				}
+			}
+
+			// Write to database if available (this will be exclusive when database is enabled)
+			if dbEnabled {
+				var s3Location string
+				if s3ParamsProvidedForCsv && *autoUploadToS3 {
+					s3Location = constructS3Location(*s3URI, outputFilename)
+				}
+				WriteCallToDatabase(callID, fromHeader, toHeader, outputFilename, s3Location, packet.Metadata().Timestamp)
+				if *debug {
+					loggerDebug.Printf("DEBUG: Call %s written to database (CSV disabled)", callID)
+				}
 			}
 		} else {
 			if *debug {
@@ -247,6 +269,26 @@ func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst 
 		}
 		call.LastActivityTime = packet.Metadata().Timestamp
 		
+		// Check if we should update the call with longer headers
+		shouldUpdate := false
+		if len(fromHeader) > len(call.SIPFrom) {
+			call.SIPFrom = fromHeader
+			shouldUpdate = true
+		}
+		if len(toHeader) > len(call.SIPTo) {
+			call.SIPTo = toHeader
+			shouldUpdate = true
+		}
+		
+		// Update database if headers were improved
+		if shouldUpdate {
+			var s3Location string
+			if s3ParamsProvidedForCsv && *autoUploadToS3 {
+				s3Location = constructS3Location(*s3URI, call.OutputFilename)
+			}
+			UpdateCallInDatabase(call.CallID, call.SIPFrom, call.SIPTo, s3Location, nil, nil, CallStateActive)
+		}
+		
 		// Track ERSPAN session if metadata is available
 		trackERSPANSession(call, erspanMeta, packet.Metadata().Timestamp)
 
@@ -261,6 +303,16 @@ func handleSipPacket(packet gopacket.Packet, sipMsgPayload []byte, ipSrc, ipDst 
 		if sipMethod == "BYE" || sipMethod == "CANCEL" {
 			loggerInfo.Printf("%s detected for call %s. Calculating stats and closing call.", sipMethod, callID)
 			calculateAndWriteRTPStats(call, packet.Metadata().Timestamp) // Call the stats function
+			
+			// Update database with finished state and final RTP stats
+			endTime := packet.Metadata().Timestamp
+			rtpStatsJSON := ConvertRTPStreamsToJSON(call.RTPStreams, call)
+			var s3Location string
+			if s3ParamsProvidedForCsv && *autoUploadToS3 {
+				s3Location = constructS3Location(*s3URI, call.OutputFilename)
+			}
+			UpdateCallInDatabase(call.CallID, call.SIPFrom, call.SIPTo, s3Location, rtpStatsJSON, &endTime, CallStateFinished)
+			
 			if call.PcapFile != nil {
 				if err := call.PcapFile.Close(); err != nil {
 					loggerInfo.Printf("Error closing PCAP file for call %s on %s: %v", callID, sipMethod, err)

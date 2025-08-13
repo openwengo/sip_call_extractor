@@ -19,6 +19,12 @@ interface=
 # Default: (empty - must specify either interface or input-file)
 input-file=
 
+# Unique identifier for this capture instance
+# Used to avoid conflicts when multiple instances write to the same database
+# Priority: CLI (--instance-id) > config (this value) > environment (INSTANCE_ID) > system hostname
+# Default: hostname -s (short hostname)
+instance-id=
+
 # BPF filter string for live capture
 # Note: BPF filters are ignored when ERSPAN mode is enabled
 # Default: udp
@@ -175,6 +181,50 @@ fragment-timeout=30s
 # Default: 1000
 max-fragments=1000
 
+[database]
+# PostgreSQL database configuration
+# If all required fields (host, user, database) are provided, the application will use
+# PostgreSQL instead of CSV files. CSV files remain as fallback.
+
+# Database host/IP address
+# Example: localhost, 192.168.1.100, db.example.com
+# Default: (empty - database disabled)
+database-host=
+
+# Database port
+# Default: 5432
+database-port=5432
+
+# Database user
+# Default: (empty - database disabled)
+database-user=
+
+# Database password
+# Default: (empty)
+database-password=
+
+# Database name
+# Default: (empty - database disabled)
+database-name=
+
+# SSL mode for database connections
+# Options: require, prefer, disable
+# Default: require
+database-ssl-mode=require
+
+# Maximum number of open database connections
+# Default: 25
+database-max-open-conns=25
+
+# Maximum number of idle database connections
+# Default: 10
+database-max-idle-conns=10
+
+# Maximum lifetime of database connections
+# Format: Go duration (e.g., "1h", "30m", "3600s")
+# Default: 1h
+database-conn-lifetime=1h
+
 # Example complete configuration for a typical deployment:
 #
 # [core]
@@ -195,6 +245,13 @@ max-fragments=1000
 # auto-upload-to-s3=true
 # s3-uri=s3://my-company-sipcapture/captures/
 # s3-region=us-east-1
+#
+# [database]
+# database-host=localhost
+# database-user=sipcapture
+# database-password=mypassword
+# database-name=sipcapture
+# database-ssl-mode=require
 #
 # [fragmentation]
 # enable-fragmentation=true

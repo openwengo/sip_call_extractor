@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -51,6 +52,21 @@ var (
 	snapshotLength *int
 	bufferSize     *int
 	captureStats   *bool
+
+	// Instance identification
+	instanceID          *string
+	effectiveInstanceID string
+
+	// Database flags
+	databaseHost         *string
+	databasePort         *int
+	databaseUser         *string
+	databasePassword     *string
+	databaseName         *string
+	databaseSSLMode      *string
+	databaseMaxOpenConns *int
+	databaseMaxIdleConns *int
+	databaseConnLifetime *time.Duration
 )
 
 // Global variable to control CSV s3_location column
@@ -130,8 +146,25 @@ func initFlags() {
 	flag.IntVar(bufferSize, "buffer-size", config.BufferSize, "OS capture buffer size in KiB (0=system default)")
 	captureStats = flag.Bool("capture-stats", config.CaptureStats, "Enable periodic capture statistics reporting")
 
+	// Instance identification flag
+	instanceID = flag.String("instance-id", config.InstanceID, "Instance identifier for this capture node (defaults to hostname). Used to de-duplicate logs across instances.")
+
+	// Database flags
+	databaseHost = flag.String("database-host", config.DatabaseHost, "PostgreSQL database host")
+	databasePort = flag.Int("database-port", config.DatabasePort, "PostgreSQL database port")
+	databaseUser = flag.String("database-user", config.DatabaseUser, "PostgreSQL database user")
+	databasePassword = flag.String("database-password", config.DatabasePassword, "PostgreSQL database password")
+	databaseName = flag.String("database-name", config.DatabaseName, "PostgreSQL database name")
+	databaseSSLMode = flag.String("database-ssl-mode", config.DatabaseSSLMode, "PostgreSQL SSL mode (require, prefer, disable)")
+	databaseMaxOpenConns = flag.Int("database-max-open-conns", config.DatabaseMaxOpenConns, "Maximum number of open database connections")
+	databaseMaxIdleConns = flag.Int("database-max-idle-conns", config.DatabaseMaxIdleConns, "Maximum number of idle database connections")
+	databaseConnLifetime = flag.Duration("database-conn-lifetime", config.DatabaseConnLifetime, "Maximum lifetime of database connections")
+
 	// Parse all flags with the new defaults
 	flag.Parse()
+	
+	// Apply environment variable fallbacks for database configuration if CLI values are not set
+	applyDatabaseEnvVarsFromCLI()
 	
 	// Apply hostname macro expansion to s3URI if provided via CLI
 	if *s3URI != "" {
@@ -140,6 +173,21 @@ func initFlags() {
 			fmt.Fprintf(os.Stderr, "Warning: Failed to expand hostname macro in s3-uri: %v\n", err)
 		} else {
 			*s3URI = expandedURI
+		}
+	}
+
+	// Resolve instance ID precedence: CLI > ENV > hostname
+	effectiveInstanceID = strings.TrimSpace(*instanceID)
+	if effectiveInstanceID == "" {
+		if envID := os.Getenv("INSTANCE_ID"); envID != "" {
+			effectiveInstanceID = envID
+		}
+	}
+	if effectiveInstanceID == "" {
+		if host, err := getHostnameShort(); err == nil {
+			effectiveInstanceID = host
+		} else {
+			effectiveInstanceID = "unknown"
 		}
 	}
 }
@@ -287,6 +335,47 @@ func compileRegexPatterns() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: Invalid regex for --no-rtp-dump-except-for-to-pattern: %v\n", err)
 			os.Exit(1)
+		}
+	}
+}
+
+// applyDatabaseEnvVarsFromCLI applies environment variable fallbacks for CLI database parameters
+// CLI parameters take precedence over environment variables, so only apply env vars when CLI values are empty
+func applyDatabaseEnvVarsFromCLI() {
+	// Only apply environment variables when CLI parameters are empty (CLI takes precedence)
+	if *databaseHost == "" {
+		if envHost := os.Getenv("DB_HOST"); envHost != "" {
+			*databaseHost = envHost
+		}
+	}
+	if *databaseName == "" {
+		if envName := os.Getenv("DB_NAME"); envName != "" {
+			*databaseName = envName
+		}
+	}
+	if *databaseUser == "" {
+		if envUser := os.Getenv("DB_USER"); envUser != "" {
+			*databaseUser = envUser
+		}
+	}
+	if *databasePassword == "" {
+		if envPassword := os.Getenv("DB_PASSWORD"); envPassword != "" {
+			*databasePassword = envPassword
+		}
+	}
+	if *databaseSSLMode == "" {
+		if envSSLMode := os.Getenv("DB_SSL_MODE"); envSSLMode != "" {
+			*databaseSSLMode = envSSLMode
+		}
+	}
+	// DB_PORT environment variable support - only apply if still at default value
+	if *databasePort == 5432 {
+		if envPort := os.Getenv("DB_PORT"); envPort != "" {
+			if port, err := strconv.Atoi(envPort); err == nil && port > 0 && port <= 65535 {
+				*databasePort = port
+			} else {
+				fmt.Fprintf(os.Stderr, "WARNING: Invalid DB_PORT environment variable: %s\n", envPort)
+			}
 		}
 	}
 }

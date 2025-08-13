@@ -1,4 +1,21 @@
 services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: sipcapture
+      POSTGRES_USER: sipcapture
+      POSTGRES_PASSWORD: sipcapture_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database_setup.sql:/docker-entrypoint-initdb.d/setup.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sipcapture -d sipcapture"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   app:
     build:
       context: .
@@ -9,6 +26,17 @@ services:
     working_dir: /app
     volumes:
       - .:/app
+      - /data:/data  # Mount for PCAP files and output
+    environment:
+      # Database configuration via environment variables
+      DB_HOST: db
+      DB_NAME: sipcapture
+      DB_USER: sipcapture
+      DB_PASSWORD: sipcapture_dev_password
+      DB_SSL_MODE: disable
+    depends_on:
+      db:
+        condition: service_healthy
     # Keep the container running so we can exec into it
     # or use 'docker-compose run app <command>'
     # For interactive development, 'stdin_open' and 'tty' are useful
@@ -16,3 +44,6 @@ services:
     # For now, we'll primarily use 'docker-compose run' or 'docker-compose exec'.
     # An infinite loop command allows 'docker-compose up -d' and then 'docker-compose exec'.
     command: tail -f /dev/null
+
+volumes:
+  postgres_data:

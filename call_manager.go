@@ -46,6 +46,14 @@ func monitorInactiveCalls() {
 				// Calculate stats before closing
 				calculateAndWriteRTPStats(call, call.LastActivityTime) // Use LastActivityTime as call end time for timeout
 
+				// Update database with timeout state and final RTP stats
+				rtpStatsJSON := ConvertRTPStreamsToJSON(call.RTPStreams, call)
+				var s3Location string
+				if s3ParamsProvidedForCsv && *autoUploadToS3 {
+					s3Location = constructS3Location(*s3URI, call.OutputFilename)
+				}
+				UpdateCallInDatabase(call.CallID, call.SIPFrom, call.SIPTo, s3Location, rtpStatsJSON, &call.LastActivityTime, CallStateTimedOut)
+
 				// Close PCAP file
 				if call.PcapFile != nil {
 					if err := call.PcapFile.Close(); err != nil {
